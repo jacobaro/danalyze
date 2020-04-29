@@ -1,6 +1,17 @@
 # analyze functions
 
-# function to easily create prediction list
+#' Function to easily create a nicely formatted prediction list.
+#'
+#' This function allows you to create formatted predictions and contrasts.
+#' @param ... Variables that will be used to create the predictions.
+#' @param .constant Variable(s) to hold constant within a contrast.
+#' @param .diff.in.diff Variable(s) to use to create a "difference-in-difference" contrast.
+#' @param .add Text to add to a contrast.
+#' @keywords prediction, contrast
+#' @export
+#' @examples
+#' pr_list(treatment = c(1, 0), condition = c("High", "Low"), .constant = "condition")
+#'
 pr_list = function(..., .constant = NULL, .diff.in.diff = NULL, .add = NULL) {
   # expand to create combinations -- moving to expand_grid (or removing strings as factors) fixes a problem with predictions being reversed
   pr = dplyr::as_tibble(tidyr::expand_grid(...))

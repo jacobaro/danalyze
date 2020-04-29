@@ -7,7 +7,7 @@ The goal of danalyze is to provide a suite of functions to allow semi-automated 
 You can install bootr from github with:
 
 
-``` r
+  ``` r
 # install.packages("devtools")
 devtools::install_github("jacobaro/danalyze")
 ```
@@ -16,6 +16,6 @@ devtools::install_github("jacobaro/danalyze")
 
 This is a basic example which shows you how to solve a common problem:
 
-``` r
+  ``` r
 ## basic example code
 ```

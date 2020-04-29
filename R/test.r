@@ -1,3 +1,6 @@
+# run to recreate roxygen stuff
+# devtools::document()
+
 # test the functions
 
 # test
