@@ -22,6 +22,6 @@ This function allows you to create formatted predictions and contrasts.
 pr_list(treatment = c(1, 0), condition = c("High", "Low"), .constant = "condition")
 
 }
-\keyword{contrast,}
+\keyword{contrast}
 \keyword{hypothesis}
-\keyword{prediction,}
+\keyword{prediction}

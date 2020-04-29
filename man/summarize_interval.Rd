@@ -14,7 +14,7 @@ summarize_interval(
 \arguments{
 \item{data}{Dataframe with variables to be summarized.}
 
-\item{.ci}{Confidence interval. Defaults to 95% (2.5% to 97.5% of distribution).}
+\item{.ci}{Confidence interval. Defaults to 95 percent, which is the 2.5th to97.5th percentile of the distribution.}
 
 \item{.grouping}{Variables that are excluded from the group and summarize. The variable "prob" should contain the estimates.}
 
@@ -27,7 +27,7 @@ This function summarizes predictions to create confidence intervals.
 summarize_interval(results)
 
 }
-\keyword{confidence}
-\keyword{interval,}
-\keyword{prediction,}
+\keyword{ci}
+\keyword{confidence_interval}
+\keyword{prediction}
 \keyword{summarize}

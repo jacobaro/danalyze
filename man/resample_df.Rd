@@ -22,7 +22,7 @@ This function allows you to resample a dataframe for analysis.
 resample_df(data, n = 2000, cluster = ~ cluster, weights = data$.weights)
 
 }
-\keyword{bootstrap,}
-\keyword{cluster,}
-\keyword{resample,}
+\keyword{bootstrap}
+\keyword{cluster}
+\keyword{resample}
 \keyword{weight}

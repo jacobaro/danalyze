@@ -39,7 +39,7 @@ This function runs either a frequentist or bayesian analysis of a dataset.
 analysis(runs = 1000, formula = out ~ treat, data = dt, inference = "bayesian")
 
 }
-\keyword{analysis,}
+\keyword{analysis}
 \keyword{bayesian}
-\keyword{boostrap,}
-\keyword{frequentist,}
+\keyword{boostrap}
+\keyword{frequentist}

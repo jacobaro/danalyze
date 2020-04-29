@@ -5,7 +5,7 @@ Title: Danalyze: Automated Analysis Functions
 Version: 0.1.0
 Author: Jacob A
 Maintainer: Jacob A <jacobaro@umd.edu>
-Depends: R (>= 3.4.0), tidyverse, rstanarm
+Depends: R (>= 3.4.0), tidyverse, rstanarm, doSNOW, foreach
 Description: This package provides a set of functions that allow user
     to automate data analysis. Meant for both novice and provessional
     users.

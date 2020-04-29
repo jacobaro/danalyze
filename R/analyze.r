@@ -7,7 +7,7 @@
 #' @param .constant Variable(s) to hold constant within a contrast.
 #' @param .diff.in.diff Variable(s) to use to create a "difference-in-difference" contrast.
 #' @param .add Text to add to a contrast.
-#' @keywords prediction, contrast, hypothesis
+#' @keywords prediction contrast hypothesis
 #' @export
 #' @examples
 #' pr_list(treatment = c(1, 0), condition = c("High", "Low"), .constant = "condition")
@@ -116,6 +116,9 @@ pr_list = function(..., .constant = NULL, .diff.in.diff = NULL, .add = NULL) {
   return(pr.full)
 }
 
+# generate resamples -- http://jee3.web.rice.edu/cluster-paper.pdf
+# resample hierarchical data: http://biostat.mc.vanderbilt.edu/wiki/Main/HowToBootstrapCorrelatedData + https://stats.idre.ucla.edu/r/dae/mixed-effects-logistic-regression/
+
 #' Function to resample a dataframe that takes into account user-specified weights and clusters.
 #'
 #' This function allows you to resample a dataframe for analysis.
@@ -123,14 +126,12 @@ pr_list = function(..., .constant = NULL, .diff.in.diff = NULL, .add = NULL) {
 #' @param n Number of resamples to generate.
 #' @param cluster Formula specifying the variable in data that identifies clusters within the data.
 #' @param weights Vector of weights to use.
-#' @keywords bootstrap, resample, cluster, weight
+#' @keywords bootstrap resample cluster weight
 #' @export
 #' @examples
 #' resample_df(data, n = 2000, cluster = ~ cluster, weights = data$.weights)
 #'
 
-# generate resamples -- http://jee3.web.rice.edu/cluster-paper.pdf
-# resample hierarchical data: http://biostat.mc.vanderbilt.edu/wiki/Main/HowToBootstrapCorrelatedData + https://stats.idre.ucla.edu/r/dae/mixed-effects-logistic-regression/
 resample_df = function(data, n = 1000, cluster = NULL, weights = NULL) {
   # the basic idea is to resample clusters based on average weight and then resample observations within a clsuter based on individual weights
 
@@ -489,6 +490,12 @@ create_model_string = function(model.type, formula.parsed, cluster, weights, inf
   return(return.string)
 }
 
+# basic logic:
+# create N dataframes that incorporate weights and clusters (accounts for effect of weights and clusters)
+# run the model N times on all dataframes and save the cleaned model object
+# run prediction and contrast on base data for each model run
+# return results
+
 #' Main entry function to conduct analysis of a dataset.
 #'
 #' This function runs either a frequentist or bayesian analysis of a dataset.
@@ -500,19 +507,12 @@ create_model_string = function(model.type, formula.parsed, cluster, weights, inf
 #' @param model.type The model type is determined automatically from the formula and data. Can optionally be specified directly.
 #' @param model.extra.args Extra arguments to the model that will be run.
 #' @param inference The type of inference to use: frequentist (the default) or bayesian.
-#' @keywords boostrap, analysis, frequentist, bayesian
+#' @keywords boostrap analysis frequentist bayesian
 #' @export
 #' @examples
 #' analysis(runs = 1000, formula = out ~ treat, data = dt, inference = "bayesian")
 #'
 
-# basic logic:
-# create N dataframes that incorporate weights and clusters (accounts for effect of weights and clusters)
-# run the model N times on all dataframes and save the cleaned model object
-# run prediction and contrast on base data for each model run
-# return results
-
-# the function to run the model and save results + model info
 analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.type = NULL, model.extra.args = NULL, inference = c("frequentist", "bayesian")) {
   # select only relevant variabls from data
   data = dplyr::select(data, all.vars(formula))

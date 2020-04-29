@@ -1,20 +1,20 @@
 # functions to get results from analysis
 
+# summarize interval -- could use HDI -- should be equivalent to http://mc-stan.org/rstanarm/reference/posterior_interval.stanreg.html
+
 #' Function to summarize a dataframe and produce confidence intervals.
 #'
 #' This function summarizes predictions to create confidence intervals.
 #' @param data Dataframe with variables to be summarized.
-#' @param .ci Confidence interval. Defaults to 95% (2.5% to 97.5% of distribution).
+#' @param .ci Confidence interval. Defaults to 95 percent, which is the 2.5th to97.5th percentile of the distribution.
 #' @param .grouping Variables that are excluded from the group and summarize. The variable "prob" should contain the estimates.
 #' @param .round The number of digits to round the results to. Can be set to 'NULL' to prevent rounding.
-#' @keywords prediction, confidence interval, summarize
+#' @keywords prediction confidence_interval ci summarize
 #' @export
 #' @examples
 #' summarize_interval(results)
 #'
 
-
-# summarize interval -- could use HDI -- should be equivalent to http://mc-stan.org/rstanarm/reference/posterior_interval.stanreg.html
 summarize_interval = function(data, .ci = 0.95, .grouping = c(".prediction.id", "prob"), .round = 3) {
   # set return
   r = data
@@ -430,6 +430,8 @@ results_contrasts = function(pr, predict.df) {
   return(contrast.df)
 }
 
+# function to get predictions from an "out" object produced by analyze
+
 #' Function to get results from an object returned by analysis.
 #'
 #' This function allows you to get results from an analysis.
@@ -438,13 +440,12 @@ results_contrasts = function(pr, predict.df) {
 #' @param method Method for producing predictions Either uses observed values (the default) or mean values.
 #' @param times Vector of times to produce predictions for. Only used for survival analysis.
 #' @param .full.matrix Whether to return structured predictions (the default) or the full matrix.
-#' @keywords bootstrap, results, prediction
+#' @keywords bootstrap results prediction
 #' @export
 #' @examples
 #' results(object = output, predictions = main.predictions)
 #'
 
-# function to get predictions from an "out" object produced by analyze
 results = function(object, predictions = NULL, method = c("observed values", "mean"), times = NULL, .full.matrix = F) {
   ## get needed variables
 

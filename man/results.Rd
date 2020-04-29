@@ -30,6 +30,6 @@ This function allows you to get results from an analysis.
 results(object = output, predictions = main.predictions)
 
 }
-\keyword{bootstrap,}
+\keyword{bootstrap}
 \keyword{prediction}
-\keyword{results,}
+\keyword{results}

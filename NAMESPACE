@@ -1,1 +1,6 @@
 exportPattern("^[[:alpha:]]+")
+importFrom("stats", "as.formula", "complete.cases", "delete.response",
+               "drop.terms", "ecdf", "formula", "glm", "make.link",
+               "median", "model.frame", "model.matrix", "pchisq",
+               "poisson", "quantile", "sd", "terms", "update")
+importFrom("utils", "setTxtProgressBar", "txtProgressBar")
