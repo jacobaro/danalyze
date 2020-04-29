@@ -1,4 +1,4 @@
-# danalyze
+# Package: 'danalyze'
 
 The goal of 'danalyze' is to provide a suite of functions to allow semi-automated causal analysis.
 
