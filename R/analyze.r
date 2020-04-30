@@ -296,10 +296,10 @@ run_all_replicates = function(replicates, boot_function, N = length(replicates),
   # create the cluster
   cl = parallel::makeCluster(num.threads, type = "PSOCK", methods = F, outfile = "")
 
-  # add libraries if necessary
-  if(!is.null(parallel.libraries)) {
-    # parallel::clusterEvalQ(cl, { library(parallel.libraries, character.only = T) }) # doesnt work
-  }
+  # # add libraries if necessary
+  # if(!is.null(parallel.libraries)) {
+  #   parallel::clusterEvalQ(cl, { library(parallel.libraries, character.only = T) }) # doesnt work
+  # }
 
   # register the cluster
   doSNOW::registerDoSNOW(cl)

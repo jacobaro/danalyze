@@ -47,7 +47,7 @@ summarize_interval = function(data, .ci = 0.95, .grouping = c(".prediction.id", 
 
   # round
   if(!is.null(.round)) {
-    r = dplyr::mutate_if(r, is.numeric, round, digits = round)
+    r = dplyr::mutate_if(r, is.numeric, round, digits = .round)
   }
 
   # return

@@ -61,35 +61,35 @@ test_analysis = function() {
   # # weighted
   # summary(lm(f, dt, weights = dt$.weights))
   # summary(lm(f.full, dt, weights = dt$.weights))
-  #
-  #
-  #
-  #
-  # # try survival
-  # data(mela.pop, package = "timereg")
-  # data.test = mela.pop
-  #
-  # # formula
-  # f = survival::Surv(start, stop, status) ~ sex + log1p(age) + rate
-  #
-  # # run survival model
-  # m.surv = survival::coxph(f, data.test, cluster = id)
-  # summary(m.surv)
-  # summary(exp(-predict(m.surv, type = "expected"))) # survival rate
-  #
-  # # stan version
-  # m.stan = rstanarm::stan_surv(f, data = data.test, prior = rstanarm::normal(scale = 1), prior_intercept = rstanarm::normal(scale = 1), warmup = 250, iter = 1000, cores = 4, basehaz = "exp")
-  #
-  # # create prediction list
-  # predictions = pr_list(rate = c(0.07, 0))
-  #
+
+
+
+
+  # try survival
+  data(mela.pop, package = "timereg")
+  data.test = mela.pop
+
+  # formula
+  f = survival::Surv(start, stop, status) ~ sex + log1p(age) + rate
+
+  # run survival model
+  m.surv = survival::coxph(f, data.test, cluster = id)
+  summary(m.surv)
+  summary(exp(-predict(m.surv, type = "expected"))) # survival rate
+
+  # stan version
+  m.stan = rstanarm::stan_surv(f, data = data.test, prior = rstanarm::normal(scale = 1), prior_intercept = rstanarm::normal(scale = 1), warmup = 250, iter = 1000, cores = 4, basehaz = "exp")
+
+  # create prediction list
+  predictions = pr_list(rate = c(0.07, 0))
+
   # # run
-  # # out = analysis(runs = 1000, formula = f, data = data.test, cluster = ~ id, weights = NULL)
-  #
+  # out = analysis(runs = 1000, formula = f, data = data.test, cluster = ~ id, weights = NULL)
+
   # # check quick summary
   # out$stan_summary
-  #
-  # # get results
-  # results(m.stan, predictions, times = 1:4)
+
+  # get results
+  results(m.stan, predictions, times = 1:4)
   # results(out, predictions)
 }
