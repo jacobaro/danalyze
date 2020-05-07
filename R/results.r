@@ -1,12 +1,70 @@
 # functions to get results from analysis
 
+# summary stats
+
+#' Function to get summary statistics from a dataframe.
+#'
+#' This function produces a table of summary statistics based on a formula and a dataframe.
+#' @param formula.list A formula or list of formulas that indicate which variables are included in summary statistics.
+#' @param data Dataframe with variables to produce summary statistics from.
+#' @param labels An optional vector of labels: c("variable" = "label).
+#' @keywords summary_stats, summary
+#' @export
+#' @examples
+#' get_summary_statistics(formula.list = ~ variable, data = df, labels = c("variable" = "label"))
+#'
+
+get_summary_statistics = function(formula.list, data, labels = NULL) {
+  # process formula
+  f = lapply(formula.list, function(x) delete.response(terms(lme4:::nobars(x))))
+
+  # get all variables
+  f.all.vars = unique(unlist(lapply(f, all.vars)))
+
+  # select frame
+  d.f = dplyr::select(dplyr::ungroup(data), tidyselect::all_of(f.all.vars))
+
+  # create model matrix preserving NAs
+  d.mm = model.matrix.lm(~ 0 + ., d.f, na.action = na.pass)
+
+  # get colnames -- do we want to do some reordering?
+  if(!is.null(labels)) {
+    suppressWarnings(col.names <- dplyr::left_join(tibble::tibble(colnames = colnames(d.mm)), tibble::tibble(values = names(labels), colnames = labels), by = "colnames"))
+    col.names$values[is.na(col.names$values)] = col.names$colnames[is.na(col.names$values)]
+    col.names = col.names$values
+  } else {
+    col.names = colnames(d.mm)
+  }
+
+
+  # convert to tibble
+  d.mm = tibble::as_tibble(d.mm)
+
+  # create the data frame
+  d.mm = tibble::tibble(
+    "Variable" = col.names,
+    "N" = sapply(d.mm, function(x) length(x[!is.na(x)])),
+    "Mean" = sapply(d.mm, mean, na.rm = T),
+    "Std. Dev." = sapply(d.mm, sd, na.rm = T),
+    "Min." = sapply(d.mm, min, na.rm = T),
+    "Max." = sapply(d.mm, max, na.rm = T)
+  )
+
+  # format
+  d.mm = dplyr::mutate_if(d.mm, is.numeric, function(x) format(round(x, 3), scientific = F, big.mark = ",", trim = T))
+
+  # return
+  return(d.mm)
+}
+
+
 # summarize interval -- could use HDI -- should be equivalent to http://mc-stan.org/rstanarm/reference/posterior_interval.stanreg.html
 
 #' Function to summarize a dataframe and produce confidence intervals.
 #'
 #' This function summarizes predictions to create confidence intervals.
 #' @param data Dataframe with variables to be summarized.
-#' @param .ci Confidence interval. Defaults to 95 percent, which is the 2.5th to97.5th percentile of the distribution.
+#' @param .ci Confidence interval. Defaults to 95 percent, which is the 2.5th to the 97.5th percentile of the distribution.
 #' @param .grouping Variables that are excluded from the group and summarize. The variable "prob" should contain the estimates.
 #' @param .round The number of digits to round the results to. Can be set to 'NULL' to prevent rounding.
 #' @keywords prediction confidence_interval ci summarize
@@ -248,6 +306,7 @@ results_coefficients = function(obj.formula, obj.draws, obj.data) {
 
   # formatted formula without backticks
   formula.labels = colnames(model.matrix(obj.formula, obj.data))
+  formula.labels = formula.labels[formula.labels %in% colnames(obj.draws)]
 
   # get coefficients
   coefs = tidyr::pivot_longer(dplyr::select(obj.draws, all_of(formula.labels)), everything(), names_to = "coefficient", values_to = "prob")
@@ -349,7 +408,7 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
     }
 
     # get eta -- the built-in function needs stanmat to be an S4 object, which is a pain so just send it manually
-    if(object$algorithm == "bootstrap") {
+    if(any(object$algorithm == "bootstrap")) {
       pp.eta = rstanarm:::pp_eta(object, pp.data, stanmat = as.matrix(obj.draws)) # would like to fix this if possible
     } else {
       pp.eta = rstanarm:::pp_eta(object, pp.data)
@@ -460,7 +519,7 @@ results = function(object, predictions = NULL, method = c("observed values", "me
 
   # get structured predictions
   if(!is.null(predictions)) {
-    pr = structure_predictions(obj.formula, obj.data, predictions)
+    pr = structure_predictions(formula = obj.formula, data = obj.data, predictions = predictions)
   } else {
     pr = NULL
   }
@@ -496,15 +555,133 @@ results = function(object, predictions = NULL, method = c("observed values", "me
   ## return stuff
 
   # set return
+  r = list(coefficients = r.coefs, predictions = r.preds, contrasts = r.contr)
+
+  # add in full matrix if desired
   if(.full.matrix) {
-    r = list(coefficients = r.coefs, predictions = predict.df, contrasts = contrast.df)
-  } else {
-    r = list(coefficients = r.coefs, predictions = r.preds, contrasts = r.contr)
+    r[["predictions.matrix"]] = predict.df
+    r[["contrasts.matrix"]] = contrast.df
   }
 
   # clean memory
   rm(r.coefs, r.preds, r.contr, predict.df, contrast.df)
 
   # return
+  return(r)
+}
+
+
+# mediation analysis using posterior distributions
+# the name of the mediator in m.med should be the same as in m.out + predictions should be in both -- add checks
+# needs a non-survival model upfront but can work with anything at the back
+# based on: https://imai.fas.harvard.edu/research/files/BaronKenny.pdf + https://imai.fas.harvard.edu/research/files/mediationP.pdf
+
+#' Function to run a mediation analysis.
+#'
+#' This function allows you to run mediation analysis based on two sets of returns from the 'analysis' function.
+#' @param m.mediator Object returned from 'analysis' function that identifies the effect of the treatment on the mediator.
+#' @param m.outcome Object returned from 'analysis' function that identifies the effect of the treatment and the mediator on the outcome.
+#' @param predictions A 'pr_list' object with the desired change in the treatment. The treatment should be in both equations.
+#' @param .outcome Optional name for the outcome. If this is missing the name of the variable is used automatically.
+#' @keywords bootstrap results mediation
+#' @export
+#' @examples
+#' results_mediation(m.mediator, m.outcome, predictions = predictions.mediation)
+#'
+
+results_mediation = function(m.mediator, m.outcome, predictions, .outcome = NULL) {
+  # use imai's updated baron-kenney approach to do mediation analysis
+
+  # basic idea:
+  #   model the mediator as a function of the treatment and the pre-treatment variables (causal effect of treatment on mediator)
+  #   model the outcome as a function of the treatment, the mediator, and the pre-treatment/mediator variables (causal effect of treatment/mediator on outcome)
+  #   identify change in outcome due to change in mediator caused by treatment
+
+  # get the effect of predictions on the mediator -- should it just pass back the full matrix and the summaries
+  effect.mediator = results(m.mediator, predictions, .full.matrix = T)
+
+  # currently we are using point predictions for the effect of the treatment on the mediator
+  # we should take into account uncertainty in this when carrying through our estimate of the indirect effect -- so if the treatment on the mediator is insignificant this needs to be accounted for
+  # this is probably why our CIs are a little too low
+
+  # create predictions (using pr_list) for mediator based on the above results (the change in the mediator that results from the treatment predictions)
+  pr.mediator = list(effect.mediator$predictions$c)
+  names(pr.mediator) = as.character(as.formula(m.mediator$formula)[2]) # should probably have an option to set the mediator name or at least make sure it is identified consistently
+  pr.mediator =  do.call(pr_list, pr.mediator)
+
+  # set outcome name if none provided
+  if(is.null(.outcome)) .outcome = as.character(as.formula(m.outcome$formula)[2])
+
+  # get raw data on mediation effect -- throws a warning with implicit NAs in the factor -- fix
+  effect.outcome = results(m.outcome, c(predictions, pr.mediator), .full.matrix = T)
+
+  # identify pairs -- this is the prediction for the treatment paired with the prediction for the mediator caused by the treatment
+  # could modify to rely on the structure predictions function instead of hand coding here
+  pairs = lapply(1:nrow(effect.mediator$contrasts), function(x) {
+    # get the predictions that correspond to this contrast
+    r = as.numeric(unlist(stringr::str_split(effect.mediator$contrasts.matrix$.prediction.id[x], ", ")))
+
+    # make the pairs
+    if(length(r) == 2) {
+      r = paste0(effect.mediator$predictions$c[r[1]], " vs. ", effect.mediator$predictions$c[r[2]])
+    } else {
+      r = paste0(effect.mediator$predictions$c[r[1]], " vs. ", effect.mediator$predictions$c[r[2]], " <- ", effect.mediator$predictions$c[r[3]], " vs. ", effect.mediator$predictions$c[r[4]])
+    }
+
+    # return
+    return(c(effect.mediator$contrasts.matrix$.contrast[x], r))
+  })
+
+  # create a vector of the correct length
+  vec_length = function(v, length = length(v)) {
+    r = rep_len(NA, length)
+    r[1:length(v)] = v
+    return(r)
+  }
+
+  # identify the mediation effect
+  r = lapply(pairs, function(x) {
+    # get the effect of the treatment on the mediator
+    mediator = effect.mediator$contrasts.matrix$prob[effect.mediator$contrasts.matrix$.contrast == x[1]]
+
+    # get the effect of the treatment on the outcome independent of the mediator
+    direct = effect.outcome$contrasts.matrix$prob[effect.outcome$contrasts.matrix$.contrast == x[1]]
+
+    # get the effect of the mediator on the outcome due to the effect of the treatment
+    indirect = effect.outcome$contrasts.matrix$prob[effect.outcome$contrasts.matrix$.contrast == x[2]]
+
+    # get the total effect of the treatment and the mediator
+    total = direct + indirect
+
+    # get the portion of the total effect explained by the mediator
+    mediated = indirect / total
+
+    # make sure everything is the correct length
+    length = max(length(mediator), length(direct), length(indirect), length(total))
+
+    # return
+    return(tibble::tibble(.treatment = x[1], .mediator = as.character(m.mediator$formula[2]), .mediator.contrast = x[2], .outcome = .outcome,
+                          direct.effect = vec_length(direct, length), indirect.effect = vec_length(indirect, length), total.effect = vec_length(total, length),
+                          prop.mediated = vec_length(mediated, length), treat.on.mediator = vec_length(mediator, length)))
+  })
+
+  # bind
+  r = dplyr::bind_rows(r)
+
+  # take the raw data from above and process -- kept in stages so what is done is transparent and easy to follow
+
+  # set name
+  r$.mediation = paste(r$.treatment, "->", r$.mediator.contrast)
+
+  # pivot
+  r = tidyr::pivot_longer(r, direct.effect:treat.on.mediator, names_to = ".effect", values_to = "prob")
+
+  # select
+  r = dplyr::select(r, .treatment, .effect, .mediator, .mediator.contrast, .outcome, prob)
+
+  # summarize
+  r = summarize_interval(r)
+
+  # send back
   return(r)
 }

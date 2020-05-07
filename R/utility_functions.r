@@ -8,19 +8,23 @@ remove_backticks = function(str) {
 }
 
 # identify time varying covariates for survival model
-# more info: https://cran.r-project.org/web/packages/survival/vignettes/timedep.pdf
+# more info: https://cran.r-project.org/web/packages/survival/vignettes/timedep.pdf + https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6015946/
 identify_tve = function(formula, data) {
   data$time.step = dplyr::if_else(data$stop < 2.172603, 0, 1)
-  formula = survival::Surv(start, stop, status) ~ sex:strata(time.step) + log1p(age) + rate
+  formula = survival::Surv(start, stop, status) ~ sex + log1p(age) + rate
 
   # run model
-  mx = survival::coxph(formula, data)
+  mx = survival::coxph(survival::Surv(start, stop, status) ~ sex + pspline(log1p(age)) + rate, data, cluster = id)
+  summary(mx)
+  mxt = timecox(survival::Surv(start, stop, status) ~ const(sex) + log1p(age) + rate, data, clusters = data$id)
+  summary(mxt)
 
   # check cox.zph
   mx.zph = survival::cox.zph(mx)
 
   # plot
   plot(mx.zph, resid = F)
+  plot(mxt)
 
   # temp data frame
   dx = tibble::as_tibble(mx.zph$y)
@@ -29,3 +33,5 @@ identify_tve = function(formula, data) {
   # get breakpoints
   br.time = dx$.time[strucchange::Fstats(formula = sex ~ .time, data = dx)$breakpoint]
 }
+
+# TODO: bring in some functions from performance package to test model assumptions
