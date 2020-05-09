@@ -248,7 +248,7 @@ model_run.bayesian = function(chain.id, formula.parsed, model.functions) {
 
   # run the call
   m = NULL
-  try(m <- do.call(model.functions$model.run, c(list(formula = formula.parsed$formula, data = formula.parsed$data, chain_id = chain.id), model.functions$model.args)), T)
+  try(m <- do.call(model.functions$model.run, c(list(formula = formula.parsed$formula.original, data = formula.parsed$data.raw, chain_id = chain.id), model.functions$model.args)), T)
 
   # get the fit from the object
   if(rlang::has_name(m, "stanfit")) {
@@ -516,8 +516,8 @@ create_model_string = function(model.type, formula.parsed, cluster, weights, inf
 #'
 
 analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.type = NULL, model.extra.args = NULL, inference = c("frequentist", "bayesian")) {
-  # select only relevant variabls from data
-  data = dplyr::select(data, all.vars(formula))
+  # select only relevant variables from data -- need to also include weights since we might have different row length after subsetting
+  data = dplyr::select(data, all.vars(formula), all.vars(cluster))
   data = dplyr::filter(data, complete.cases(data))
 
   # parse the formula

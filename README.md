@@ -44,7 +44,7 @@ This is a basic example to show the workflow:
   # run the analysis -- the function will figure out what models to run
   out = analysis(runs = 1000, formula = f, data = dt)
   
-  # examine the results -- the funciton will test the hypothesis in "predictions"
-  results(m.out, predictions)
+  # examine the results -- the function will test the hypothesis in "predictions"
+  results(out, predictions)
   
 ```

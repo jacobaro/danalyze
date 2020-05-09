@@ -96,6 +96,63 @@ test_analysis = function() {
   # results(out, predictions)
 }
 
+# run tests for glm
+test_glm = function() {
+  # load data
+  data(lalonde.psid, package = "causalsens")
+
+  # set the formula
+  m = treat ~ education * nodegree + black + hispanic + log1p(age) + married + log1p(re75) + log1p(re74) * nodegree
+  f = re78 ~ treat
+  f.nb = round(re78) ~ treat
+
+  # select data and include only complete cases (optional)
+  dt = dplyr::filter(dplyr::select(lalonde.psid, all.vars(m), all.vars(f)), complete.cases(lalonde.psid))
+
+  # get weights
+  dt$.weights = CBPS::CBPS(m, dt)$weights
+
+  # run glm with and without weights
+  summary(glm(f, dt, family = gaussian))
+  summary(glm(f, dt, family = gaussian, weights = dt$.weights))
+  summary(MASS::glm.nb(f.nb, dt, weights = dt$.weights))
+
+  # create a hypothesis that we want to test -- in this case the impact of moving from a value of '0' to '1' for "treat"
+  predictions = pr_list(treat = c(1, 0))
+
+  # run the analysis -- both with and without weights
+  out.unweighted = analysis(runs = 1000, formula = f, data = dt)
+  out.weighted = analysis(runs = 1000, formula = f, data = dt, weights = dt$.weights)
+  out.nb = analysis(runs = 1000, formula = f.nb, data = dt, weights = dt$.weights)
+
+  # examine the results, which should be very close to the summaries above
+  results(out.unweighted, predictions)
+  results(out.weighted, predictions)
+  results(out.nb, predictions)
+}
+
+# run tests for glm
+test_survival = function() {
+  # try survival
+  data(mela.pop, package = "timereg")
+
+  # formula
+  f = survival::Surv(start, stop, status) ~ sex + log1p(age) + rate
+
+  # run survival model
+  m.surv = survival::coxph(f, mela.pop, cluster = id)
+  summary(m.surv)
+
+  # create prediction list
+  predictions = pr_list(rate = c(0.07, 0))
+
+  # run
+  out = analysis(runs = 1000, formula = f, data = mela.pop, inference = "bayesian", model.extra.args = list(cores = 6, warmup = 250))
+
+  # get results
+  results(m.stan, predictions, times = 1:4)
+}
+
 # runs a test for mediation analysis -- compares output from this package to 'mediation'
 test_mediation = function() {
   # load data
