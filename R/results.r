@@ -77,6 +77,9 @@ summarize_interval = function(data, .ci = 0.95, .grouping = c(".prediction.id", 
   # set return
   r = data
 
+  # if a variable is a list than take the median
+  r = dplyr::mutate_if(r, is.list, function(x) sapply(x, median))
+
   # identify variables to group by
   vars.group = colnames(r)[!colnames(r) %in% .grouping]
 
@@ -114,7 +117,7 @@ summarize_interval = function(data, .ci = 0.95, .grouping = c(".prediction.id", 
 
 # internal function
 # structure predictions to make it easy to run one predict with observed values with factors and nicely setup contrasts
-structure_predictions = function(formula, data, predictions) {
+structure_predictions = function(formula, data, predictions, method) {
 
   ## GET DATA TO USE
 
@@ -156,11 +159,18 @@ structure_predictions = function(formula, data, predictions) {
       prediction.frame = dplyr::select(prediction.frame, -.model)
     }
 
-    # make distinct (after name is removed)
-    prediction.frame = dplyr::distinct(prediction.frame)
+    # make distinct (after name is removed) -- throws a warning for type 'list' which is what we use to pass a sampling distribution -- fix eventually but okay for now
+    suppressWarnings(prediction.frame <- dplyr::distinct(prediction.frame))
+
+    # use mean values or observed values
+    if(dplyr::first(method) == "observed values") {
+      data.prediction = data.all
+    } else {
+      data.prediction = dplyr::summarize_all(data.all, mean)
+    }
 
     # expand so that we have all observed values for each prediction
-    data.prediction = data.all[rep(1:nrow(data.all), times = nrow(prediction.frame)), ]
+    data.prediction = data.prediction[rep(1:nrow(data.prediction), times = nrow(prediction.frame)), ]
 
     # check to make sure prediction vars are in data frame
     if(!all(colnames(prediction.frame) %in% colnames(data.prediction))) {
@@ -173,7 +183,7 @@ structure_predictions = function(formula, data, predictions) {
     ## create the full data frame of observed values used for predictions
 
     # the prediction values to overlay on data.prediction
-    prediction.temp = prediction.frame[rep(1:nrow(prediction.frame), each = nrow(data.all)), ]
+    prediction.temp = prediction.frame[rep(1:nrow(prediction.frame), each = nrow(data.prediction) / dplyr::n_distinct(prediction.frame$.prediction.id)), ]
 
     # set missing from master
     for(var in colnames(prediction.temp)) {
@@ -181,7 +191,33 @@ structure_predictions = function(formula, data, predictions) {
     }
 
     # overlay prediction values on main data frame
-    data.prediction[, colnames(prediction.temp)] = prediction.temp[, colnames(prediction.temp)]
+    # # data.prediction[, colnames(prediction.temp)] = prediction.temp[, colnames(prediction.temp)]
+    colnames.overlap = colnames(prediction.temp) # colnames(data.prediction)[colnames(data.prediction) %in% colnames(prediction.temp)]
+    # data.overlap = !is.na(prediction.temp[, colnames.overlap]) & !apply(prediction.temp[, colnames.overlap], 2, function(x) sapply(x, is.null))
+    # data.prediction[, colnames.overlap][data.overlap] = prediction.temp[, colnames.overlap][data.overlap]
+    # lapply(colnames.overlap, function(x) dplyr::if_else(as.vector(!is.na(prediction.temp[, x]) & !apply(prediction.temp[, x], 2, function(y) sapply(y, is.null))), prediction.temp[[x]], data.prediction[[x]]))
+    data.merge =
+      lapply(colnames.overlap,
+             function(x) {
+               # identify which values need to be replaced
+               add = as.vector(is.na(prediction.temp[, x]) | apply(prediction.temp[, x], 2, function(y) sapply(y, is.null)))
+
+               # create return vector and replace needed values
+               t = prediction.temp[[x]]
+               t[add] = data.prediction[[x]][add]
+
+               # return
+               return(t)
+             })
+    data.merge = dplyr::as_tibble(data.merge, .name_repair = "minimal")
+    colnames(data.merge) = colnames.overlap
+    data.prediction[, colnames.overlap] = data.merge[, colnames.overlap]
+
+    # this samples for each observed value -- we want to just take mean values and the inflate by the distribution size
+    # if we passed a distribution instead of a discrete value, then go through and sample a random pair for each observation
+    data.prediction = dplyr::mutate_if(data.prediction, is.list, function(x) sapply(x, function(y) if(!is.null(y)) as.list(y) else NULL))
+    data.prediction = tidyr::unnest(data.prediction, cols = colnames(data.prediction)[sapply(data.prediction, is.list)], keep_empty = T)
+    data.prediction = dplyr::mutate_if(data.prediction, is.list, function(x) sapply(x, function(y) { y[is.null(y)] = NA_real_; y }))
   } else {
     prediction.frame = NULL
     data.prediction = NULL
@@ -196,7 +232,7 @@ structure_predictions = function(formula, data, predictions) {
     create_blank_factor = function(t) {
       if(class(prediction.frame[[t]]) == "factor") {
         return(tibble::tibble(!!t := factor(NA_character_, levels = levels(prediction.frame[[t]]))))
-      } else if(class(prediction.frame[[t]]) == "character") {
+      } else if(class(prediction.frame[[t]]) == "character" || class(prediction.frame[[t]]) == "list") {
         return(tibble::tibble(!!t := NA_character_))
       } else {
         return(tibble::tibble(!!t := NA_real_))
@@ -208,15 +244,33 @@ structure_predictions = function(formula, data, predictions) {
 
     # set contrast -- because we can have NAs in our prediction
     set_contrast = function(x) {
+      # create a blank one row dataframe to stuff our values in
       cols = colnames(x)[colnames(x) %in% colnames(all.na)]
       r = all.na
+
+      # stuff our values
       r[cols] = x[cols]
-      r = suppressWarnings(dplyr::left_join(r, prediction.frame)$.prediction.id)
+
+      # set reference
+      r = dplyr::mutate_if(r, is.list, function(x) sapply(x, data.table::address))
+      prediction.frame.temp = dplyr::mutate_if(prediction.frame, is.list, function(x) { y = sapply(x, data.table::address); y[sapply(x, is.null)] = NA_character_; y })
+
+      # this mimics functionality in dplyr unique -- matches by memory reference when the dataframes have a list
+      r = dplyr::left_join(r, prediction.frame.temp, by = colnames(r)[colnames(r) %in% colnames(prediction.frame.temp)])$.prediction.id
+
+      # # identify the row in prediction.frame that matches r, which allows us to pull the proper .prediction.id
+      # r = apply(sapply(colnames(r), function(x) sapply(1:nrow(prediction.frame), function(y) all(r[[x]][[1]] == prediction.frame[[x]][[y]]) || (is.na(r[[x]][[1]]) && is.na(prediction.frame[[x]][[y]])))), 1, all)
+      # r[is.na(r)] = F
+      #
+      # # pull the prediction id
+      # r = dplyr::first(prediction.frame$.prediction.id[r])
+
+      # return
       return(r)
     }
 
     # set contrasts -- need to manually set the NAs in the predictions so we can left join correctly
-    contrast.frame = lapply(predictions, function(y) suppressMessages(sapply(y, set_contrast)))
+    contrast.frame = lapply(predictions, function(y) sapply(y, set_contrast))
   } else {
     contrast.frame = NULL
   }
@@ -389,30 +443,30 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
     pp.data = rstanarm:::pp_data(object, pr$data, re.form = NA)
 
     # summarize if desired
-    if(dplyr::first(method) == "observed values") {
+    # if(dplyr::first(method) == "observed values") {
       # save prediction id
       .prediction.id = pr$data$.prediction.id
-    } else {
-      # add in prediction id
-      pp.data$x = tibble::as_tibble(pp.data$x)
-      pp.data$x$.prediction.id = pr$data$.prediction.id
-
-      # summarize -- get means instead of observed values for predictions
-      pp.data$x = dplyr::summarize_all(dplyr::group_by(pp.data$x, .prediction.id), mean)
-
-      # save prediction id
-      .prediction.id = pp.data$x$.prediction.id
-
-      # save data back
-      pp.data$x = as.matrix(dplyr::select(pp.data$x, -.prediction.id))
-    }
+    # } else {
+    #   # add in prediction id
+    #   pp.data$x = tibble::as_tibble(pp.data$x)
+    #   pp.data$x$.prediction.id = pr$data$.prediction.id
+    #
+    #   # summarize -- get means instead of observed values for predictions
+    #   pp.data$x = dplyr::summarize_all(dplyr::group_by(pp.data$x, .prediction.id), mean)
+    #
+    #   # save prediction id
+    #   .prediction.id = pp.data$x$.prediction.id
+    #
+    #   # save data back
+    #   pp.data$x = as.matrix(dplyr::select(pp.data$x, -.prediction.id))
+    # }
 
     # get eta -- the built-in function needs stanmat to be an S4 object, which is a pain so just send it manually
-    if(any(object$algorithm == "bootstrap")) {
+    # if(any(object$algorithm == "bootstrap")) {
       pp.eta = rstanarm:::pp_eta(object, pp.data, stanmat = as.matrix(obj.draws)) # would like to fix this if possible
-    } else {
-      pp.eta = rstanarm:::pp_eta(object, pp.data)
-    }
+    # } else {
+    #   pp.eta = rstanarm:::pp_eta(object, pp.data)
+    # }
 
     # get the linear predictors and then transform by the inverse link function -- all pretty basic
     pp.args = rstanarm:::pp_args(object, pp.eta)
@@ -434,8 +488,11 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
   # pivot longer
   predict.df = tidyr::pivot_longer(predict.df, -tidyselect::all_of(group.vars), names_to = ".extra.name", values_to = "prob")
 
+  # nicer version of predicitons to add
+  nice.predictions = dplyr::mutate_if(pr$predictions, is.list, function(x) sapply(x, function(y) if(is.null(y)) NA else median(y)))
+
   # add variable names
-  predict.df = dplyr::left_join(dplyr::select(dplyr::ungroup(predict.df), -.extra.name), pr$predictions, by = ".prediction.id")
+  predict.df = dplyr::left_join(dplyr::select(dplyr::ungroup(predict.df), -.extra.name), nice.predictions, by = ".prediction.id")
 
   # return
   return(predict.df)
@@ -456,29 +513,26 @@ results_contrasts = function(pr, predict.df) {
     # get the contrast
     if(l == 2) { # 1 - 2
       r = predict.df$prob[predict.df$.prediction.id == x[1]] - predict.df$prob[predict.df$.prediction.id == x[2]]
-    }
-    else if(l == 4) { # (1 - 2) - (3 - 4)
+    } else if(l == 4) { # (1 - 2) - (3 - 4)
       r = (predict.df$prob[predict.df$.prediction.id == x[1]] - predict.df$prob[predict.df$.prediction.id == x[2]]) -
         (predict.df$prob[predict.df$.prediction.id == x[3]] - predict.df$prob[predict.df$.prediction.id == x[4]])
-    }
-    else {
+    } else {
       r = NA
     }
+
+    # create tibble
+    r = tibble::tibble(
+      .contrast = dplyr::first(names(pr$contrasts)[sapply(pr$contrasts, function(c) all(c == x))]),
+      .prediction.id = paste(x, collapse = ", "),
+      prob = r)
 
     # return
     return(r)
   }
 
-  # times
-  times = nrow(predict.df) / nrow(pr$predictions)
-
-  # get contrasts
-  contrast.df =
-    tibble::tibble(
-      .contrast = rep(names(pr$contrasts), each = times),
-      .prediction.id = rep(format(pr$contrasts), each = times),
-      prob = as.numeric(sapply(pr$contrasts, get_contrasts, predict.df = predict.df))
-    )
+  # get raw contrasts
+  contrast.df = lapply(pr$contrasts, get_contrasts, predict.df = predict.df)
+  contrast.df = dplyr::bind_rows(contrast.df)
 
   # if we have time add it
   if(rlang::has_name(predict.df, ".time")) {
@@ -517,9 +571,15 @@ results = function(object, predictions = NULL, method = c("observed values", "me
   # get the data used for running the model
   obj.data = get_data(object)
 
+  # are we dealing with variable distributions
+  has.distributions = any(unlist(sapply(predictions, function(x) lapply(x[[1]], is.list))))
+
+  # we cant do observed values and a variable with a distribution (memory problems) so just set to mean and go from there
+  if(has.distributions) method = "mean"
+
   # get structured predictions
   if(!is.null(predictions)) {
-    pr = structure_predictions(formula = obj.formula, data = obj.data, predictions = predictions)
+    pr = structure_predictions(formula = obj.formula, data = obj.data, predictions = predictions, method = method)
   } else {
     pr = NULL
   }
@@ -604,33 +664,44 @@ results_mediation = function(m.mediator, m.outcome, predictions, .outcome = NULL
   # we should take into account uncertainty in this when carrying through our estimate of the indirect effect -- so if the treatment on the mediator is insignificant this needs to be accounted for
   # this is probably why our CIs are a little too low
 
-  # create predictions (using pr_list) for mediator based on the above results (the change in the mediator that results from the treatment predictions)
-  pr.mediator = list(effect.mediator$predictions$c)
-  names(pr.mediator) = as.character(as.formula(m.mediator$formula)[2]) # should probably have an option to set the mediator name or at least make sure it is identified consistently
+  # create a prediction list that allows sampling (instead of a single value we pass it the distribution of values identified)
+  mediation.var.name = as.character(as.formula(m.mediator$formula)[2])
+  pr.mat = matrix(effect.mediator$predictions.matrix$prob, ncol = dplyr::n_distinct(effect.mediator$predictions.matrix$.prediction.id))
+  pr.mediator = list(list(pr.mat[, 1], pr.mat[, 2]))
+  names(pr.mediator) = mediation.var.name
   pr.mediator =  do.call(pr_list, pr.mediator)
+
+  # # create predictions (using pr_list) for mediator based on the above results (the change in the mediator that results from the treatment predictions)
+  # pr.mediator = list(effect.mediator$predictions$c)
+  # names(pr.mediator) = as.character(as.formula(m.mediator$formula)[2]) # should probably have an option to set the mediator name or at least make sure it is identified consistently
+  # pr.mediator =  do.call(pr_list, pr.mediator)
 
   # set outcome name if none provided
   if(is.null(.outcome)) .outcome = as.character(as.formula(m.outcome$formula)[2])
 
-  # get raw data on mediation effect -- throws a warning with implicit NAs in the factor -- fix
+  # when getting results we could try sample from the treatment effect distribution instead of taking point estimates -- effect.mediator$predictions.matrix (the prediction ids for the contrast)
+
+
+  # get raw data on mediation effect -- we need to bring in uncertainty about the effect of the treatment on mediator when producing predictions
   effect.outcome = results(m.outcome, c(predictions, pr.mediator), .full.matrix = T)
 
   # identify pairs -- this is the prediction for the treatment paired with the prediction for the mediator caused by the treatment
   # could modify to rely on the structure predictions function instead of hand coding here
-  pairs = lapply(1:nrow(effect.mediator$contrasts), function(x) {
-    # get the predictions that correspond to this contrast
-    r = as.numeric(unlist(stringr::str_split(effect.mediator$contrasts.matrix$.prediction.id[x], ", ")))
-
-    # make the pairs
-    if(length(r) == 2) {
-      r = paste0(effect.mediator$predictions$c[r[1]], " vs. ", effect.mediator$predictions$c[r[2]])
-    } else {
-      r = paste0(effect.mediator$predictions$c[r[1]], " vs. ", effect.mediator$predictions$c[r[2]], " <- ", effect.mediator$predictions$c[r[3]], " vs. ", effect.mediator$predictions$c[r[4]])
-    }
-
-    # return
-    return(c(effect.mediator$contrasts.matrix$.contrast[x], r))
-  })
+  # pairs = lapply(1:nrow(effect.mediator$contrasts), function(x) {
+  #   # get the predictions that correspond to this contrast
+  #   r = as.numeric(unlist(stringr::str_split(effect.mediator$contrasts.matrix$.prediction.id[x], ", ")))
+  #
+  #   # make the pairs
+  #   if(length(r) == 2) {
+  #     r = paste0(effect.mediator$predictions$c[r[1]], " vs. ", effect.mediator$predictions$c[r[2]])
+  #   } else {
+  #     r = paste0(effect.mediator$predictions$c[r[1]], " vs. ", effect.mediator$predictions$c[r[2]], " <- ", effect.mediator$predictions$c[r[3]], " vs. ", effect.mediator$predictions$c[r[4]])
+  #   }
+  #
+  #   # return
+  #   return(c(effect.mediator$contrasts.matrix$.contrast[x], r))
+  # })
+  pairs = list(c(effect.outcome$contrasts$.contrast))
 
   # create a vector of the correct length
   vec_length = function(v, length = length(v)) {

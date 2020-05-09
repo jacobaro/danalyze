@@ -117,12 +117,17 @@ test_mediation = function() {
   ## RUN DANALYZE PACKAGE VERSION
 
   # mediation models
-  md.m = danalyze::analysis(runs = 2000, formula = job_seek ~ treat + econ_hard + sex + age, data = jobs)
-  md.y = danalyze::analysis(runs = 2000, formula = depress2 ~ treat + job_seek + econ_hard + sex + age, data = jobs)
+  md.m = danalyze::analysis(runs = 2000, formula = job_seek ~ treat + econ_hard + sex + log1p(age), data = jobs)
+  md.y = danalyze::analysis(runs = 2000, formula = depress2 ~ treat + job_seek + econ_hard + sex + log1p(age), data = jobs)
 
   # set predictions
   m.predictions = danalyze::pr_list(treat = c(1, 0))
 
   # get mediation results
   out.med = danalyze::results_mediation(m.mediator = md.m, m.outcome = md.y, predictions = m.predictions)
+
+  # show results
+  out.med
+
+  # p-values and effect sizes should be very similar (direct.effect == ADE, indirect.effect == ACME, etc.)
 }
