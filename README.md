@@ -4,12 +4,24 @@ The goal of 'danalyze' is to provide a suite of functions to allow semi-automate
 
 ## Installation
 
-You can install 'danalyze' from github with:
-
+You can install 'danalyze' from github using the following code:
 
   ``` r
-# install.packages("devtools")
+# if devtools package is not installed run: install.packages("devtools")
 devtools::install_github("jacobaro/danalyze")
+
+```
+
+## Dependencies
+
+Most of the underlying models run come from different packages. Make sure the following packages are installed 
+for full funcitonality: lme4, MASS, rstanarm, survival, tidyverse, and timereg.
+
+In addition, to run a Bayesian version of survival analysis it is necessary to install a development version of rstanarm.
+To do this run: 
+
+  ``` r
+  devtools::install_github("stan-dev/rstanarm", ref = "feature/survival", build_vignettes = F)
 ```
 
 ## Example
@@ -17,21 +29,22 @@ devtools::install_github("jacobaro/danalyze")
 This is a basic example to show the workflow:
 
   ``` r
-  # load data
+  # first load the data
   data(lalonde.psid, package = "causalsens")
 
-  # set formulas
+  # set the formula
   f = re78 ~ treat
   
-  # select data
-  dt = dplyr::select(lalonde.test, all.vars(f.f))
+  # select data and include only complete cases (optional)
+  dt = dplyr::filter(dplyr::select(lalonde.psid, all.vars(f)), complete.cases(lalonde.psid))
   
-  # create prediction list
+  # create a hypothesis that we want to test -- in this case the impact of moving from a value of '0' to '1' for "treat"
   predictions = pr_list(treat = c(1, 0))
   
-  # run analysis
+  # run the analysis -- the function will figure out what models to run
   out = analysis(runs = 1000, formula = f, data = dt)
   
-  # get results
+  # examine the results -- the funciton will test the hypothesis in "predictions"
   results(m.out, predictions)
+  
 ```
