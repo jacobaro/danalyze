@@ -15,7 +15,7 @@ devtools::install_github("jacobaro/danalyze")
 ## Dependencies
 
 Most of the underlying models run come from different packages. Make sure the following packages are installed 
-for full funcitonality: lme4, MASS, rstanarm, survival, tidyverse, and timereg.
+for full functionality: lme4, MASS, rstanarm, survival, tidyverse, and timereg.
 
 In addition, to run a Bayesian version of survival analysis it is necessary to install a development version of rstanarm.
 To do this run: 
