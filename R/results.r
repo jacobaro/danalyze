@@ -121,8 +121,15 @@ structure_predictions = function(formula, data, predictions, method) {
 
   ## GET DATA TO USE
 
+  # identify variable
+  vars.to.include = all.vars(formula)
+
   # subset the data
-  data.all = dplyr::select(dplyr::ungroup(data), all.vars(formula))
+  if(any(vars.to.include == ".")) {
+    data.all = dplyr::ungroup(data)
+  } else {
+    data.all = dplyr::select(dplyr::ungroup(data), all.vars(formula))
+  }
 
   # select complete cases
   data.all = dplyr::filter(data.all, complete.cases(data.all))
@@ -191,11 +198,11 @@ structure_predictions = function(formula, data, predictions, method) {
     }
 
     # overlay prediction values on main data frame
-    # # data.prediction[, colnames(prediction.temp)] = prediction.temp[, colnames(prediction.temp)]
-    colnames.overlap = colnames(prediction.temp) # colnames(data.prediction)[colnames(data.prediction) %in% colnames(prediction.temp)]
-    # data.overlap = !is.na(prediction.temp[, colnames.overlap]) & !apply(prediction.temp[, colnames.overlap], 2, function(x) sapply(x, is.null))
-    # data.prediction[, colnames.overlap][data.overlap] = prediction.temp[, colnames.overlap][data.overlap]
-    # lapply(colnames.overlap, function(x) dplyr::if_else(as.vector(!is.na(prediction.temp[, x]) & !apply(prediction.temp[, x], 2, function(y) sapply(y, is.null))), prediction.temp[[x]], data.prediction[[x]]))
+
+    # get colnames
+    colnames.overlap = colnames(prediction.temp)
+
+    # merge
     data.merge =
       lapply(colnames.overlap,
              function(x) {
@@ -218,6 +225,18 @@ structure_predictions = function(formula, data, predictions, method) {
     data.prediction = dplyr::mutate_if(data.prediction, is.list, function(x) sapply(x, function(y) if(!is.null(y)) as.list(y) else NULL))
     data.prediction = tidyr::unnest(data.prediction, cols = colnames(data.prediction)[sapply(data.prediction, is.list)], keep_empty = T)
     data.prediction = dplyr::mutate_if(data.prediction, is.list, function(x) sapply(x, function(y) { y[is.null(y)] = NA_real_; y }))
+
+    # # transform to model matrix
+    #
+    # # save prediction id
+    # .prediction.id = matrix(data = data.prediction$.prediction.id, ncol = 1, dimnames = list(NULL, ".prediction.id"))
+    #
+    # # transform
+    # data.prediction = model.matrix(obj.formula, data.prediction)
+    # data.prediction = cbind(data.prediction, .prediction.id)
+    #
+    # # turn into data frame
+    # data.prediction = tibble::as_tibble(data.prediction)
   } else {
     prediction.frame = NULL
     data.prediction = NULL
@@ -322,7 +341,7 @@ get_formula = function(object) {
   # get formula
   if(purrr::is_formula(object$formula) || class(object$formula) %in% "brmsformula") {
     obj.formula = terms(as.formula(object$formula)) # good formula
-  } else if(purrr::is_formula(object$formula$formul)) {
+  } else if(purrr::is_formula(object$formula$formula)) {
     obj.formula = terms(object$formula$formula) # nested formula
   } else if(is.list(object$formula)) {
     obj.formula  = lapply(object$formula, terms) # multiple formula
@@ -358,8 +377,11 @@ results_coefficients = function(obj.formula, obj.draws, obj.data) {
 
   # break into coefficients, predictions, contrasts functions
 
+  # fix backticks in obj.draws
+  colnames(obj.draws) = remove_backticks(colnames(obj.draws))
+
   # formatted formula without backticks
-  formula.labels = colnames(model.matrix(obj.formula, obj.data))
+  formula.labels = remove_backticks(colnames(model.matrix(obj.formula, obj.data)))
   formula.labels = formula.labels[formula.labels %in% colnames(obj.draws)]
 
   # get coefficients
@@ -385,38 +407,79 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
       times = seq(1:as.integer(max(object$eventtime)))
     }
 
+    # # do we need to supply our own baseline hazard
+    # overwrite.baseline = rlang::has_name(object$basehaz, "raw.data")
+    #
+    # # get baseline hazard for times identified
+    # if(overwrite.baseline) {
+    #   # interpolate hazard
+    #   bh.time = approx(x = object$basehaz$raw.data$time, y = object$basehaz$raw.data$hazard, xout = times)
+    #
+    #   # limit time to only what is available in the data
+    #   bh.time$y[is.na(bh.time$y)] = max(bh.time$y, na.rm = T)
+    #
+    #   # format more nicely
+    #   bh.time = tibble::tibble(time = bh.time$x, haz = bh.time$y)
+    #
+    #   # save original call
+    #   original.call = rstanarm:::evaluate_log_basesurv
+    #
+    #   # hook into rstanarm:::evaluate_log_basesurv to pass our own baseline hazard when needed
+    #   assignInNamespace("evaluate_log_basesurv", function(times, basehaz, aux, intercept = NULL) {
+    #     # do we want our own baseline hazard or pass back to rstanarm
+    #     if(overwrite.baseline) {
+    #       return(-bh.time$haz[times])
+    #     } else {
+    #       return(original.call(times = times, basehaz = basehaz, aux = aux, intercept = intercept))
+    #     }
+    #   }, ns = "rstanarm")
+    # }
+
+    # # function to get the curve
+    # predict_survival = function(time, object, pr, obj.draws, type = "cdf") {
+    #   if(rlang::has_name(object$basehaz, "raw.data")) {
+    #     # generate linear predictor
+    #     pp.args = as.matrix(obj.draws) %*% t(pr$data[, colnames(obj.draws)])
+    #
+    #     # do exp(-exp(lp) * basehaz)
+    #     # pp.args = exp(-bh.time$haz[bh.time$time == time]) ^ exp(pp.args)
+    #     # pp.args = exp(-exp(pp.args) * bh.time$haz[bh.time$time == time])
+    #     pp.args = exp(pp.args) * bh.time$haz[bh.time$time == time]
+    #
+    #     # get the cdf
+    #     pp.args = 1 - exp(-pp.args)
+    #
+    #     # format the return
+    #     predict.df = tibble::as_tibble(t(pp.args), .name_repair = "minimal")
+    #     colnames(predict.df) = 1:ncol(predict.df)
+    #
+    #     # add prediction id
+    #     predict.df$.prediction.id = pr$data$.prediction.id
+    #     predict.df$.time = time
+    #
+    #     # return
+    #     return(predict.df)
+    #   }
+    # }
+    #
+    # # combine
+    # predict.df = dplyr::bind_rows(lapply(times, predict_survival, object = object, pr = pr, obj.draws = obj.draws))
+
+    # # add intercept if needed
+    # if(!rlang::has_name(pr$data, "(Intercept)") & !rlang::has_name(obj.draws, "(Intercept)")) {
+    #   pr$data[, "(Intercept)"] = 0
+    #   obj.draws[, "(Intercept)"] = 0
+    # }
+
     # predict survival function -- default to cdf which is 1 - surv
-    predict_survival = function(time, object, pr, stanmat, type = "cdf") {
+    predict_survival = function(time, object, pr, obj.draws, type = "cdf") {
+      # to get the CDF it is basehaz * exp(beta)
+
       # first format the data
       pp.data = rstanarm:::.pp_data_surv(object = object, newdata = pr$data, times = rep(time, nrow(pr$data)), at_quadpoints = T)
 
-      # summarize if desired
-      if(dplyr::first(method) == "observed values") {
-        # save prediction id
-        .prediction.id = pr$data$.prediction.id
-      } else {
-        # add in prediction id
-        pp.data$x = tibble::as_tibble(pp.data$x)
-        pp.data$x$.prediction.id = pr$data$.prediction.id
-
-        # set other vars
-        pp.data$pts = sapply(unique(pr$data$.prediction.id), function(x) mean(pp.data$pts[pp.data$x$.prediction.id == x], na.rm = T))
-        pp.data$wts = sapply(unique(pr$data$.prediction.id), function(x) mean(pp.data$wts[pp.data$x$.prediction.id == x], na.rm = T))
-        pp.data$ids = sapply(unique(pr$data$.prediction.id), function(x) mean(pp.data$ids[pp.data$x$.prediction.id == x], na.rm = T))
-        pp.data$s = matrix(0, length(pp.data$pts), 0) #### NEES TO BE FIXED for time varying covariates
-
-        # summarize -- get means instead of observed values for predictions
-        pp.data$x = dplyr::summarize_all(dplyr::group_by(pp.data$x, .prediction.id), mean)
-
-        # save prediction id
-        .prediction.id = pp.data$x$.prediction.id
-
-        # save data back
-        pp.data$x = as.matrix(dplyr::select(pp.data$x, -.prediction.id))
-      }
-
       # now get the full package for prediction
-      pp.pars = rstanarm:::extract_pars.stansurv(object = object, stanmat = stanmat, means = F)
+      pp.pars = rstanarm:::extract_pars.stansurv(object = object, stanmat = obj.draws, means = F)
       pp.pars = lapply(pp.pars, as.matrix) # saves as a dataframe so convert to a matrix
 
       # get the prediction -- rows are draws, columns are newdata observations
@@ -427,7 +490,7 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
       colnames(predict.df) = 1:ncol(predict.df)
 
       # add prediction id
-      predict.df$.prediction.id = .prediction.id
+      predict.df$.prediction.id = pr$data$.prediction.id
       predict.df$.time = time
 
       # return
@@ -435,12 +498,20 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
     }
 
     # combine
-    predict.df = dplyr::bind_rows(lapply(times, predict_survival, object = object, pr = pr, stanmat = obj.draws))
+    predict.df = dplyr::bind_rows(lapply(times, predict_survival, object = object, pr = pr, obj.draws = obj.draws))
+
+    # # return
+    # if(overwrite.baseline) {
+    #   # return the original function to the namespace
+    #   assignInNamespace("evaluate_log_basesurv", original.call, ns = "rstanarm")
+    # }
   } else {
     # using rstanarm built-in function -- each row is a draw, each column is a row in the prediction frame -- pp_eta gets the linear predictor, pp_args gets the inverse link of the LP
 
+    #
+
     # first get formatted data -- basically model.matrix -- average over random effects
-    pp.data = rstanarm:::pp_data(object, pr$data, re.form = NA)
+    pp.data = rstanarm:::pp_data(object, pr$data, re.form = NA, offset = rep(0, nrow(pr$data)))
 
     # summarize if desired
     # if(dplyr::first(method) == "observed values") {

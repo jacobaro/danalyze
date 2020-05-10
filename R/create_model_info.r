@@ -81,6 +81,7 @@ parse_formula = function(formula, data) {
 
   # make the full formula -- the full formula is always response ~ explanatory + added
   formula.full = formula(paste(as.character(formula.response)[2], "~", paste(c(sapply(colnames(data.full), glue::backtick), formula.random, formula.survival), collapse = " + ")), env = environment(formula))
+  # formula.full = formula(paste(as.character(formula.response)[2], "~", paste(c(".", formula.random, formula.survival), collapse = " + ")), env = environment(formula))
 
   # add response and additional to full data -- also converts to data_frame
   data.full = dplyr::bind_cols(list(dplyr::select(data, all.vars(formula.response)), as.data.frame(data.full), dplyr::select(data, all.vars(formula.add))))
@@ -90,8 +91,8 @@ parse_formula = function(formula, data) {
   # return list
   r = list(
     # the formula and data for running the model
-    formula = formula.full,
-    data = data.full,
+    formula = formula,
+    data = data,
     data.raw = data,
 
     # formula components
@@ -170,13 +171,13 @@ determine_model = function(formula.parsed, data) {
         model.type = model.type.list$binary
       }
     }
-    else if (all(data.response >= 0) & all(data.response %% 1 == 0)) {
+    else if(all(data.response >= 0) & all(data.response %% 1 == 0)) {
       # count data
 
       # check for over dispersion
 
       # first run a poisson to see if it fits well or not
-      m.t = suppressWarnings(glm(formula, data, family = poisson))
+      m.t = suppressWarnings(glm(formula.parsed$formula, data, family = poisson))
 
       # check if residual deviance/df is much bigger than one -- also: summary(m.t)$deviance / m.t$df.residual > 1.5
       if(1 - pchisq(summary(m.t)$deviance, m.t$df.residual) < 0.05) {
@@ -225,13 +226,7 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
     special = NULL,
     libraries = NULL,
 
-    # priors
-    prior = NULL,
-    prior_intercept = NULL,
-    prior_aux = NULL,
-    prior_counts = NULL,
-
-    # additinal rstanarm stuff
+    # additional rstanarm stuff
     cores = NULL,
     chains = NULL,
     iter = NULL,
@@ -314,20 +309,11 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
     # predictions for MNL https://cran.r-project.org/web/packages/MNLpred/vignettes/OVA_Predictions_For_MNL.html
   }
 
-  # for survival
-  if(model.type == model.type.list$survival) {
-    model.extra$model.run = survival::coxph
-    model.extra$model.args = list(ties = "efron", y = T, x = T, model = T)
-    model.extra$family = NULL
-    model.extra$class = c("frequentist", "survival")
-    model.extra$converged = function(x) T
-  }
-
   # additions/changes for mixed effects
-  if(formula.parsed$random.effects) {
+  if(formula.parsed$random.effects & inference == "frequentist") {
     # we cant do some models with random effects
     if(!model.type %in% c(model.type.list$linear, model.type.list$binary)) {
-      stop(paste("Unable to run --", model.info$model, "-- with Random Effects"))
+      stop(paste("Unable to run --", model.type, "-- with Random Effects"))
     }
 
     # model changes
@@ -340,10 +326,29 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
     model.extra$residuals = lme4:::residuals
   }
 
+  # for survival
+  if(model.type == model.type.list$survival) {
+    model.extra$model.run = survival::coxph
+    model.extra$model.args = list(ties = "efron", y = T, x = T, model = T)
+    model.extra$class = c("frequentist", "survival")
+    model.extra$fitted = function(x) c("mean_PPD" = mean(x$y[, ncol(x$y)] - x$residuals, na.rm = T))
+    model.extra$performance = function(x) c("log-posterior" = x$loglik[2]) # could also use concordance: x$concordance["concordance"]
+    model.extra$residuals = function(x) x$residuals # martingale residuals = true events - predict(fit, type = 'expected') events
+    model.extra$converged = function(x) x$info["convergence"] == 0
+
+    # fast_bh -- this returns our full baseline hazard instead of a shape parameter as would occur in a stan model -- right now just assume an exponential baseline
+    model.extra$special = function(x) { bh = danalyze:::fast_bh(x); intercept = log(sum(bh$hazard) / sum(bh$time)); c("(Intercept)" = intercept) }
+  }
+
   # additional stuff for bayesian models
   if(inference == "bayesian") {
     # set model
     model.extra$model.run = rstanarm::stan_glm
+
+    # set mixed effects version
+    if(formula.parsed$random.effects) {
+      model.extra$model.run = rstanarm::stan_glmer
+    }
 
     # set class
     model.extra$class[1] = "bayesian"
@@ -355,8 +360,9 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
     model.extra$model.args$prior_aux = rstanarm::exponential(1)
 
     # set multicore stuff
-    model.extra$model.args$cores = 1
-    model.extra$model.args$chains = 1
+    model.extra$model.args$cores = 6
+    model.extra$model.args$chains = 6
+    model.extra$model.args$warmup = 250
     model.extra$model.args$iter = 1000
     model.extra$model.args$seed = 24021985
 
@@ -371,7 +377,7 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
     if(model.type == model.type.list$survival) {
       model.extra$model.run = rstanarm::stan_surv
       model.extra$model.args$prior_aux = NULL
-      model.extra$basehaz = "weibull"
+      model.extra$model.args$basehaz = "exp"
     }
 
     ## need to add in brms zero inflated

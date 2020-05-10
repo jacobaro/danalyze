@@ -486,7 +486,7 @@ create_model_string = function(model.type, formula.parsed, cluster, weights, inf
     paste0("Model: ", model.type,
            if(!is.na(model.string)) paste0(" with ", model.string) else "",
            if(!is.na(se.string)) paste0(", Data: ", se.string) else "",
-           ", Method: ", inf.string)
+           ", Inference: ", inf.string)
 
   # return
   return(return.string)
@@ -516,9 +516,17 @@ create_model_string = function(model.type, formula.parsed, cluster, weights, inf
 #'
 
 analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.type = NULL, model.extra.args = NULL, inference = c("frequentist", "bayesian")) {
-  # select only relevant variables from data -- need to also include weights since we might have different row length after subsetting
+  # select only relevant variables from data -- need to also include weights since we might have different row length after sub-setting
   data = dplyr::select(data, all.vars(formula), all.vars(cluster))
-  data = dplyr::filter(data, complete.cases(data))
+
+  # identify complete cases
+  data.present = complete.cases(data)
+
+  # filter
+  data = dplyr::filter(data, data.present)
+
+  # filter weights too
+  if(!is.null(weights)) weights = weights[data.present]
 
   # parse the formula
   formula.parsed = parse_formula(formula = formula, data = data)
@@ -649,7 +657,8 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
     out$data = formula.parsed$data
 
     # save the model frame
-    out$model = formula.parsed$data
+    out$model = model.matrix(formula.parsed$formula, formula.parsed$data)
+    out$model_frame = model.frame(formula.parsed$formula, formula.parsed$data)
 
     # set offset
     out$offset = rep(0, nrow(formula.parsed$data))
@@ -660,10 +669,17 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
     # set draws
     out$asymptotic_sampling_dist = out$stanfit
 
+    # set class
+    class(out) = c(c("stanreg", "bootstrap"), model.functions$class)
+
     # set model specific stuff
     if(model.type == model.type.list$survival) {
       # get baseline hazard
-      out$basehaz = survival::basehaz(base.model, centered = F)
+      out$basehaz = list(type_name = "exp", type = 5, raw.data = survival::basehaz(base.model, centered = F))
+      out$has_tve = F
+      out$has_quadrature = F
+      out$has_bars = F
+      out$x = out$model[, remove_backticks(attr(terms(formula.parsed$formula), "term.labels"))]
 
       # get info about Y
       model.y = as.matrix(base.model$y)
@@ -674,10 +690,10 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
       out$eventtime = model.y[, "stop"]
       out$event = as.logical(model.y[, "status"])
       out$delayed = model.y[, "start"] != 0
-    }
 
-    # set class
-    class(out) = c("stanreg", "bootstrap")
+      # set class
+      class(out) = c("stansurv", class(out))
+    }
   }
 
   # free memory

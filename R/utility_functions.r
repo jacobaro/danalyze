@@ -34,4 +34,16 @@ identify_tve = function(formula, data) {
   br.time = dx$.time[strucchange::Fstats(formula = sex ~ .time, data = dx)$breakpoint]
 }
 
+# fast identification of baseline hazard
+fast_bh = function(model) {
+  # get survfit
+  sfit = survival::survfit(model, se.fit = F)
+
+  # remove means
+  chaz = sfit$cumhaz * exp(-sum(model$means * model$coefficients))
+
+  # return
+  return(list(hazard = chaz, time = sfit$time))
+}
+
 # TODO: bring in some functions from performance package to test model assumptions
