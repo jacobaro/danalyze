@@ -224,7 +224,7 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
     fitted = NULL,
     performance = NULL,
     special = NULL,
-    libraries = NULL,
+    libraries = "stats",
 
     # additional rstanarm stuff
     cores = NULL,
@@ -338,6 +338,9 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
 
     # fast_bh -- this returns our full baseline hazard instead of a shape parameter as would occur in a stan model -- right now just assume an exponential baseline
     model.extra$special = function(x) { bh = danalyze:::fast_bh(x); intercept = log(sum(bh$hazard) / sum(bh$time)); c("(Intercept)" = intercept) }
+
+    # set library
+    model.extra$libraries = "survival"
   }
 
   # additional stuff for bayesian models

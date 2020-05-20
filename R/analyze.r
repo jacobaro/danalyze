@@ -611,8 +611,11 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
     # print
     cat("Running model\n")
 
-    # run model on full data initially
-    base.model = do.call(model.functions$model.run, c(list(formula = formula.parsed$formula, data = formula.parsed$data), model.functions$model.args))
+    # run model on full data initially -- load package as needed
+    base.model =
+      withr::with_package(model.functions$libraries, {
+        do.call(what = model.functions$model.run, args = c(list(formula = formula.parsed$formula, data = formula.parsed$data), model.functions$model.args))
+      })
 
     # run the replicates
     out =
@@ -624,7 +627,7 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
       )
 
     # check if something went wrong
-    if(!is.list(out$result) && !is.list(out$result[[1]]) && length(out$result[[1]]) != 5) {
+    if(!is.list(out$result) || length(out$result) == 0) {
       print(out$result[[1]])
       stop("Model did not run. Please respecify and try again.")
     }
@@ -647,8 +650,8 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
     out$stanfit = full.matrix[, c(full.names$alpha, full.names$beta, full.names$aux)]
 
     # set coefficients
-    out$coefficients = apply(out$stanfit[, c(full.names$alpha, full.names$beta)], 2, median, na.rm = T)
-    out$ses = apply(out$stanfit[, c(full.names$alpha, full.names$beta)], 2, sd, na.rm = T)
+    out$coefficients = apply(out$stanfit[, c(full.names$alpha, full.names$beta), drop = F], 2, median, na.rm = T)
+    out$ses = apply(out$stanfit[, c(full.names$alpha, full.names$beta), drop = F], 2, sd, na.rm = T)
 
     # create a stan_summary
     out$stan_summary = create_stan_summary(full.matrix, full.names)
@@ -657,8 +660,8 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
     out$data = formula.parsed$data
 
     # save the model frame
-    out$model = model.matrix(formula.parsed$formula, formula.parsed$data)
-    out$model_frame = model.frame(formula.parsed$formula, formula.parsed$data)
+    out$model = withr::with_package(model.functions$libraries, model.matrix(formula.parsed$formula, formula.parsed$data))
+    out$model_frame = withr::with_package(model.functions$libraries, model.frame(formula.parsed$formula, formula.parsed$data))
 
     # set offset
     out$offset = rep(0, nrow(formula.parsed$data))
@@ -679,17 +682,23 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
       out$has_tve = F
       out$has_quadrature = F
       out$has_bars = F
-      out$x = out$model[, remove_backticks(attr(terms(formula.parsed$formula), "term.labels"))]
+      out$x = out$model[, remove_backticks(attr(terms(formula.parsed$formula), "term.labels")), drop = F]
 
       # get info about Y
       model.y = as.matrix(base.model$y)
-      colnames(model.y) = as.character(base.model$terms[[2]])[-1]
+      colnames(model.y) = colnames(base.model$y)
 
       # set entrytime, eventtime, event, and delayed
-      out$entrytime = model.y[, "start"]
-      out$eventtime = model.y[, "stop"]
+      if("time" %in% colnames(base.model$y)) {
+        out$entrytime = rep(0, nrow(model.y))
+        out$eventtime = model.y[, "time"]
+      } else {
+        out$entrytime = model.y[, "start"]
+        out$eventtime = model.y[, "stop"]
+      }
+
       out$event = as.logical(model.y[, "status"])
-      out$delayed = model.y[, "start"] != 0
+      out$delayed = any(model.y[, "start"] != 0)
 
       # set class
       class(out) = c("stansurv", class(out))
