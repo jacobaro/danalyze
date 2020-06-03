@@ -8,6 +8,7 @@
 #' @param formula.list A formula or list of formulas that indicate which variables are included in summary statistics.
 #' @param data Dataframe with variables to produce summary statistics from.
 #' @param labels An optional vector of labels: c("variable" = "label).
+#' @return A dataframe of summary statistics.
 #' @keywords summary_stats, summary
 #' @export
 #' @examples
@@ -153,7 +154,7 @@ structure_predictions = function(formula, data, predictions, method) {
       }
     }
 
-    # combine
+    # combine -- move to this instead: vctrs::vec_c()
     prediction.frame = dplyr::bind_rows(dplyr::combine(predictions))
 
     # remove ".name" column if present
@@ -173,7 +174,8 @@ structure_predictions = function(formula, data, predictions, method) {
     if(dplyr::first(method) == "observed values") {
       data.prediction = data.all
     } else {
-      data.prediction = dplyr::summarize_all(data.all, mean)
+      # use mean for numeric values and mode otherwise
+      data.prediction = dplyr::summarize_all(data.all, function(x) if (is.numeric(x)) mean(x, na.rm = T) else { r = unique(x); r[which.max(tabulate(match(x, r)))] })
     }
 
     # expand so that we have all observed values for each prediction
@@ -365,7 +367,8 @@ get_data = function(object, data = NULL) {
 }
 
 # internal function to process and return coefficients
-results_coefficients = function(obj.formula, obj.draws, obj.data) {
+# TODO: make it get the time-varying coefficients as well
+results_coefficients = function(obj.formula, obj.draws, obj.data, times = NULL) {
   # delete response to make it easier to work with -- especially with more complicated brms formulas
   obj.formula = formula(delete.response(obj.formula))
 
@@ -392,10 +395,15 @@ results_coefficients = function(obj.formula, obj.draws, obj.data) {
 }
 
 # internal function to process and return predictions
-results_predictions = function(object, pr, obj.draws, method = c("observed values", "mean"), times = NULL) {
+results_predictions = function(object, pr, obj.draws, method = c("observed values", "mean"), draws = 1000, times = NULL) {
   # do we have predictions
   if(is.null(pr)) {
     return(NULL)
+  }
+
+  # do we want to sample from the draws?
+  if(!is.null(draws) && draws <= nrow(obj.draws)) {
+    obj.draws = obj.draws[sample.int(nrow(obj.draws), size = draws), ]
   }
 
   # type of predict
@@ -472,25 +480,25 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
     # }
 
     # predict survival function -- default to cdf which is 1 - surv
-    predict_survival = function(time, object, pr, obj.draws, type = "cdf") {
+    predict_survival = function(time, object, newdata, obj.draws, type = "cdf") {
       # to get the CDF it is basehaz * exp(beta)
 
-      # first format the data
-      pp.data = rstanarm:::.pp_data_surv(object = object, newdata = pr$data, times = rep(time, nrow(pr$data)), at_quadpoints = T)
-
-      # now get the full package for prediction
+      # get parameters
       pp.pars = rstanarm:::extract_pars.stansurv(object = object, stanmat = obj.draws, means = F)
       pp.pars = lapply(pp.pars, as.matrix) # saves as a dataframe so convert to a matrix
 
+      # format the data
+      pp.data = rstanarm:::.pp_data_surv(object = object, newdata = newdata, times = rep(time, nrow(newdata)), at_quadpoints = T)
+
       # get the prediction -- rows are draws, columns are newdata observations
-      pp.args = rstanarm:::.pp_predict_surv.stansurv(object = object, data = pp.data, pars = pp.pars, type)
+      pp.args = rstanarm:::.pp_predict_surv.stansurv(object = object, data = pp.data, pars = pp.pars, type = type)
 
       # format the return
       predict.df = tibble::as_tibble(t(pp.args), .name_repair = "minimal")
       colnames(predict.df) = 1:ncol(predict.df)
 
       # add prediction id
-      predict.df$.prediction.id = pr$data$.prediction.id
+      predict.df$.prediction.id = newdata$.prediction.id
       predict.df$.time = time
 
       # return
@@ -498,7 +506,7 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
     }
 
     # combine
-    predict.df = dplyr::bind_rows(lapply(times, predict_survival, object = object, pr = pr, obj.draws = obj.draws))
+    predict.df = dplyr::bind_rows(lapply(times, predict_survival, object = object, newdata = pr$data, obj.draws = obj.draws))
 
     # # return
     # if(overwrite.baseline) {
@@ -508,7 +516,7 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
   } else {
     # using rstanarm built-in function -- each row is a draw, each column is a row in the prediction frame -- pp_eta gets the linear predictor, pp_args gets the inverse link of the LP
 
-    #
+    # TODO: need to update to make it work with random effects -- requires setting is.mer
 
     # first get formatted data -- basically model.matrix -- average over random effects
     pp.data = rstanarm:::pp_data(object, pr$data, re.form = NA, offset = rep(0, nrow(pr$data)))
@@ -559,7 +567,7 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
   # pivot longer
   predict.df = tidyr::pivot_longer(predict.df, -tidyselect::all_of(group.vars), names_to = ".extra.name", values_to = "prob")
 
-  # nicer version of predicitons to add
+  # nicer version of predictions to add -- make a sent distribution look nicer
   nice.predictions = dplyr::mutate_if(pr$predictions, is.list, function(x) sapply(x, function(y) if(is.null(y)) NA else median(y)))
 
   # add variable names
@@ -591,11 +599,18 @@ results_contrasts = function(pr, predict.df) {
       r = NA
     }
 
+    # could easily just make a new tibble that combines portions of predict.df -- and change the variable names to see what predictions where used (1, 2, 3, 4)
+
     # create tibble
     r = tibble::tibble(
       .contrast = dplyr::first(names(pr$contrasts)[sapply(pr$contrasts, function(c) all(c == x))]),
       .prediction.id = paste(x, collapse = ", "),
       prob = r)
+
+    # if we have time add it
+    if(rlang::has_name(predict.df, ".time")) {
+      r$.time = predict.df$.time[predict.df$.prediction.id == x[1]]
+    }
 
     # return
     return(r)
@@ -604,11 +619,6 @@ results_contrasts = function(pr, predict.df) {
   # get raw contrasts
   contrast.df = lapply(pr$contrasts, get_contrasts, predict.df = predict.df)
   contrast.df = dplyr::bind_rows(contrast.df)
-
-  # if we have time add it
-  if(rlang::has_name(predict.df, ".time")) {
-    contrast.df$.time = predict.df$.time[predict.df$.prediction.id == 1]
-  }
 
   # return
   return(contrast.df)
@@ -630,7 +640,7 @@ results_contrasts = function(pr, predict.df) {
 #' results(object = output, predictions = main.predictions)
 #'
 
-results = function(object, predictions = NULL, method = c("observed values", "mean"), times = NULL, .full.matrix = F) {
+results = function(object, predictions = NULL, method = c("observed values", "mean"), times = NULL, draws = 1000, .full.matrix = F) {
   ## get needed variables
 
   # get results from the model run
@@ -648,13 +658,6 @@ results = function(object, predictions = NULL, method = c("observed values", "me
   # we cant do observed values and a variable with a distribution (memory problems) so just set to mean and go from there
   if(has.distributions) method = "mean"
 
-  # get structured predictions
-  if(!is.null(predictions)) {
-    pr = structure_predictions(formula = obj.formula, data = obj.data, predictions = predictions, method = method)
-  } else {
-    pr = NULL
-  }
-
 
   ## create coefficient frames
 
@@ -664,23 +667,31 @@ results = function(object, predictions = NULL, method = c("observed values", "me
   # summarize to get coefficient values
   r.coefs = summarize_interval(r.coefs)
 
+  ## create predictions and contrastsframe
 
-  ## create predictions frame
+  # get structured predictions
+  if(!is.null(predictions)) {
+    # structure predictions data frame
+    pr = structure_predictions(formula = obj.formula, data = obj.data, predictions = predictions, method = method)
 
-  # get predictions
-  predict.df = results_predictions(object, pr, obj.draws, method, times)
+    # get predictions
+    predict.df = results_predictions(object = object, pr = pr, obj.draws = obj.draws, method = method, draws = draws, times = times)
 
-  # produce predictions that include the prediction id
-  r.preds = summarize_interval(predict.df, .grouping = c("prob"))
+    # produce predictions that include the prediction id
+    r.preds = summarize_interval(predict.df, .grouping = c("prob"))
 
+    # get contrasts
+    contrast.df = results_contrasts(pr, predict.df)
 
-  ## create contrasts frame
-
-  # get contrasts
-  contrast.df = results_contrasts(pr, predict.df)
-
-  # summarize
-  r.contr = summarize_interval(contrast.df, .grouping = c("prob"))
+    # summarize
+    r.contr = summarize_interval(contrast.df, .grouping = c("prob"))
+  } else {
+    # set everything to null
+    predict.df = NULL
+    r.preds = NULL
+    contrast.df = NULL
+    r.contr = NULL
+  }
 
 
   ## return stuff
@@ -720,7 +731,7 @@ results = function(object, predictions = NULL, method = c("observed values", "me
 #' results_mediation(m.mediator, m.outcome, predictions = predictions.mediation)
 #'
 
-results_mediation = function(m.mediator, m.outcome, predictions, .outcome = NULL) {
+results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, .outcome = NULL) {
   # use imai's updated baron-kenney approach to do mediation analysis
 
   # basic idea:
@@ -729,7 +740,7 @@ results_mediation = function(m.mediator, m.outcome, predictions, .outcome = NULL
   #   identify change in outcome due to change in mediator caused by treatment
 
   # get the effect of predictions on the mediator -- should it just pass back the full matrix and the summaries
-  effect.mediator = results(m.mediator, predictions, .full.matrix = T)
+  effect.mediator = results(object = m.mediator, predictions = predictions, times = times, .full.matrix = T)
 
   # currently we are using point predictions for the effect of the treatment on the mediator
   # we should take into account uncertainty in this when carrying through our estimate of the indirect effect -- so if the treatment on the mediator is insignificant this needs to be accounted for
@@ -754,7 +765,7 @@ results_mediation = function(m.mediator, m.outcome, predictions, .outcome = NULL
 
 
   # get raw data on mediation effect -- we need to bring in uncertainty about the effect of the treatment on mediator when producing predictions
-  effect.outcome = results(m.outcome, c(predictions, pr.mediator), .full.matrix = T)
+  effect.outcome = results(object = m.outcome, predictions = c(predictions, pr.mediator), times = times, .full.matrix = T)
 
   # identify pairs -- this is the prediction for the treatment paired with the prediction for the mediator caused by the treatment
   # could modify to rely on the structure predictions function instead of hand coding here
@@ -772,7 +783,6 @@ results_mediation = function(m.mediator, m.outcome, predictions, .outcome = NULL
   #   # return
   #   return(c(effect.mediator$contrasts.matrix$.contrast[x], r))
   # })
-  pairs = list(c(effect.outcome$contrasts$.contrast))
 
   # create a vector of the correct length
   vec_length = function(v, length = length(v)) {
@@ -781,16 +791,20 @@ results_mediation = function(m.mediator, m.outcome, predictions, .outcome = NULL
     return(r)
   }
 
-  # identify the mediation effect
-  r = lapply(pairs, function(x) {
+  # identify the mediation effect -- currently it is averaging over time -- should account for time -- the matrix from the result needs to return time
+  r = lapply(length(names(predictions)), function(x) {
+    # get the contrasts
+    med.contrast = names(pr.mediator)[x]
+    treat.contrast = names(predictions)[x]
+
     # get the effect of the treatment on the mediator
-    mediator = effect.mediator$contrasts.matrix$prob[effect.mediator$contrasts.matrix$.contrast == x[1]]
+    mediator = effect.mediator$contrasts.matrix$prob[effect.mediator$contrasts.matrix$.contrast == treat.contrast]
 
     # get the effect of the treatment on the outcome independent of the mediator
-    direct = effect.outcome$contrasts.matrix$prob[effect.outcome$contrasts.matrix$.contrast == x[1]]
+    direct = effect.outcome$contrasts.matrix$prob[effect.outcome$contrasts.matrix$.contrast == treat.contrast]
 
     # get the effect of the mediator on the outcome due to the effect of the treatment
-    indirect = effect.outcome$contrasts.matrix$prob[effect.outcome$contrasts.matrix$.contrast == x[2]]
+    indirect = effect.outcome$contrasts.matrix$prob[effect.outcome$contrasts.matrix$.contrast == med.contrast]
 
     # get the total effect of the treatment and the mediator
     total = direct + indirect
@@ -802,7 +816,7 @@ results_mediation = function(m.mediator, m.outcome, predictions, .outcome = NULL
     length = max(length(mediator), length(direct), length(indirect), length(total))
 
     # return
-    return(tibble::tibble(.treatment = x[1], .mediator = as.character(m.mediator$formula[2]), .mediator.contrast = x[2], .outcome = .outcome,
+    return(tibble::tibble(.treatment = treat.contrast, .mediator = as.character(m.mediator$formula[2]), .mediator.contrast = med.contrast, .outcome = .outcome,
                           direct.effect = vec_length(direct, length), indirect.effect = vec_length(indirect, length), total.effect = vec_length(total, length),
                           prop.mediated = vec_length(mediated, length), treat.on.mediator = vec_length(mediator, length)))
   })

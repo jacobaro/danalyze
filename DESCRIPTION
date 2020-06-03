@@ -2,7 +2,7 @@ Package: danalyze
 Type: Package
 Date: 2020-05-01
 Title: Danalyze: Automated Analysis Functions
-Version: 0.1.0
+Version: 0.1.1
 Author: Jacob A
 Maintainer: Jacob A <jacobaro@umd.edu>
 Depends: R (>= 3.4.0), tidyverse, rstanarm, doSNOW, foreach

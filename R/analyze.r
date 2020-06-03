@@ -250,17 +250,23 @@ model_run.bayesian = function(chain.id, formula.parsed, model.functions) {
   m = NULL
   try(m <- do.call(model.functions$model.run, c(list(formula = formula.parsed$formula.original, data = formula.parsed$data.raw, chain_id = chain.id), model.functions$model.args)), T)
 
-  # get the fit from the object
-  if(rlang::has_name(m, "stanfit")) {
-    m.fit <- m$stanfit
-  } else if(rlang::has_name(m, "fit")) {
-    m.fit <- m$fit
+  # did we have an error?
+  if(is.null(m)) {
+    r = list(model = NULL, fit = NULL, error = as.character(.Last.value))
   } else {
-    m.fit <- NULL
+    # get the fit from the object
+    if(rlang::has_name(m, "stanfit")) {
+      m.fit = m$stanfit
+    } else if(rlang::has_name(m, "fit")) {
+      m.fit = m$fit
+    } else {
+      m.fit = NULL
+    }
+
+    # structure return
+    r = list(model = m, fit = m.fit)
   }
 
-  # structure return
-  r = list(model = m, fit = m.fit)
 
   # return
   return(r)
@@ -293,7 +299,7 @@ run_all_replicates = function(replicates, boot_function, N = length(replicates),
   closeAllConnections()
 
   # set number of threads
-  num.threads = max(1, min(max.threads, parallel::detectCores(T, T), na.rm = T), na.rm = T)
+  num.threads = as.integer(parallel::detectCores(T, T) * 0.75)
 
   # create the cluster
   cl = parallel::makeCluster(num.threads, type = "PSOCK", methods = F, outfile = "")
@@ -515,7 +521,9 @@ create_model_string = function(model.type, formula.parsed, cluster, weights, inf
 #' analysis(runs = 1000, formula = out ~ treat, data = dt, inference = "bayesian")
 #'
 
-analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.type = NULL, model.extra.args = NULL, inference = c("frequentist", "bayesian")) {
+analysis = function(runs, formula, main.ivs = NULL, data, cluster = NULL, weights = NULL, model.type = NULL, model.extra.args = NULL, inference = c("frequentist", "bayesian")) {
+  # need to add some error checking -- e.g., adding priors to non-bayesian analysis, etc.
+
   # select only relevant variables from data -- need to also include weights since we might have different row length after sub-setting
   data = dplyr::select(data, all.vars(formula), all.vars(cluster))
 
@@ -524,6 +532,11 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
 
   # filter
   data = dplyr::filter(data, data.present)
+
+  # make sure we have data
+  if(nrow(data) == 0) {
+    stop("Data has zero rows. Check NAs in variables!")
+  }
 
   # filter weights too
   if(!is.null(weights)) weights = weights[data.present]
@@ -542,6 +555,11 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
     }
   }
 
+  # return if model.type fails
+  if(is.null(model.type)) {
+    return(NULL)
+  }
+
   # set inference
   if(dplyr::first(inference) %in% c("Bayesian", "bayesian", "Bayes", "bayes")) {
     inference = "bayesian"
@@ -550,32 +568,41 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
   }
 
   # print
-  cat(paste("Running --", create_model_string(model.type = model.type, formula.parsed = formula.parsed, cluster = cluster, weights = weights, inference = inference), "-- analysis\n"))
+  cat(paste("Building --", create_model_string(model.type = model.type, formula.parsed = formula.parsed, cluster = cluster, weights = weights, inference = inference), "-- analysis\n"))
 
   # get model extra
-  model.functions = produce_model_function(model.type = model.type, formula.parsed = formula.parsed, inference = inference, model.extra.args = model.extra.args)
+  model.functions = produce_model_function(model.type = model.type, formula.parsed = formula.parsed, inference = inference, model.extra.args = model.extra.args, main.ivs = main.ivs)
 
   # run the model -- either bayesian or frequentist
 
   # main division
   if(inference == "bayesian") {
     # print
-    cat("Running model\n")
+    cat("Running model...\n")
 
-    # set resamples
+    # set resamples -- right now this really just allows you to set the number of cores and iterations
     resamples = as.list(1:model.functions$model.args$cores)
     model.functions$model.args$cores = 1
+    model.functions$model.args$chains = 1
+    # model.functions$model.args$chains = model.functions$model.args$cores
+    # model.functions$model.args$iter = runs
 
-    # set iterations
-    model.functions$model.args$iter = runs
-
-    # run multicore
+    # run multi-core
     out = run_all_replicates(
       replicates = resamples,
       boot_function = model_run.bayesian,
       args = list(formula.parsed = formula.parsed, model.functions = model.functions),
       parallel.libraries = model.functions$libraries
     )
+
+    # # run normally
+    # out = model_run.bayesian(NULL, formula.parsed = formula.parsed, model.functions = model.functions)
+
+    # check if something went wrong
+    if(!is.list(out$result) || length(out$result) == 0 || is.null(out$result[[1]]$model)) {
+      print(out$result[[1]])
+      stop("Model did not run. Please respecify and try again.")
+    }
 
     # combine the chains together
     if(length(out$result) > 0) {
@@ -627,7 +654,7 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
       )
 
     # check if something went wrong
-    if(!is.list(out$result) || length(out$result) == 0) {
+    if(!is.list(out$result) || length(out$result) <= 1) {
       print(out$result[[1]])
       stop("Model did not run. Please respecify and try again.")
     }
@@ -637,8 +664,9 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
     out$terms = terms(formula.parsed$formula)
     out$family = model.functions$family
 
-    # full matrix
-    full.matrix = t(sapply(out$result, function(x) { .Internal(unlist(c(x$alpha, x$beta, x$aux, x$mean_PPD, x$lp_), F, F)) }))
+    # full matrix -- this is needed for models that do not return the same variable names each time (e.g., factors with few observations)
+    full.matrix = dplyr::bind_rows(lapply(out$result, function(x) { tibble::as_tibble_row(.Internal(unlist(c(x$alpha, x$beta, x$aux, x$mean_PPD, x$lp_), F, F))) }))
+    full.matrix = as.matrix(full.matrix)
 
     # fix colnames by getting rid of backticks
     colnames(full.matrix) = remove_backticks(colnames(full.matrix))
@@ -682,7 +710,7 @@ analysis = function(runs, formula, data, cluster = NULL, weights = NULL, model.t
       out$has_tve = F
       out$has_quadrature = F
       out$has_bars = F
-      out$x = out$model[, remove_backticks(attr(terms(formula.parsed$formula), "term.labels")), drop = F]
+      out$x = if("(Intercept)" %in% colnames(out$model)) out$model[, -which(colnames(out$model) == "(Intercept)")] else out$model
 
       # get info about Y
       model.y = as.matrix(base.model$y)

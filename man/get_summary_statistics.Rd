@@ -13,6 +13,9 @@ get_summary_statistics(formula.list, data, labels = NULL)
 
 \item{labels}{An optional vector of labels: c("variable" = "label).}
 }
+\value{
+A dataframe of summary statistics.
+}
 \description{
 This function produces a table of summary statistics based on a formula and a dataframe.
 }

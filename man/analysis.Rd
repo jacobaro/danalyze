@@ -7,6 +7,7 @@
 analysis(
   runs,
   formula,
+  main.ivs = NULL,
   data,
   cluster = NULL,
   weights = NULL,

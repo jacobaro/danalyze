@@ -4,7 +4,13 @@
 \alias{results_mediation}
 \title{Function to run a mediation analysis.}
 \usage{
-results_mediation(m.mediator, m.outcome, predictions, .outcome = NULL)
+results_mediation(
+  m.mediator,
+  m.outcome,
+  predictions,
+  times = NULL,
+  .outcome = NULL
+)
 }
 \arguments{
 \item{m.mediator}{Object returned from 'analysis' function that identifies the effect of the treatment on the mediator.}

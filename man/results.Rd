@@ -9,6 +9,7 @@ results(
   predictions = NULL,
   method = c("observed values", "mean"),
   times = NULL,
+  draws = 1000,
   .full.matrix = F
 )
 }

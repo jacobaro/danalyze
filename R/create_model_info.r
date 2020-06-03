@@ -20,6 +20,10 @@ model.type.list =
 parse_formula = function(formula, data) {
   ## setup a few variables
 
+  # select only relevant vars and complete cases
+  data = dplyr::select(data, all.vars(formula))
+  data = dplyr::filter(data, complete.cases(data))
+
   # get the sides of the formula
   formula.explanatory = formula(delete.response(terms(formula)))
   formula.response = update(formula, . ~ 1)
@@ -42,7 +46,7 @@ parse_formula = function(formula, data) {
   ## find and deal wit special terms
 
   # special terms
-  specials = c("strata", "tt", "frailty")
+  specials = c("strata", "tt", "frailty", "cluster")
 
   # get the special terms for event history models
   time.terms = terms(formula.explanatory, specials = specials)
@@ -203,10 +207,68 @@ determine_model = function(formula.parsed, data) {
   return(model.type)
 }
 
+# identify time varying covariates for survival model
+# more info: https://cran.r-project.org/web/packages/survival/vignettes/timedep.pdf + https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6015946/
+# https://myweb.uiowa.edu/pbreheny/7210/f15/notes/12-1.pdf + https://arxiv.org/pdf/2002.09633.pdf
+identify_tve = function(formula, data, var = NULL, random.effects = F) {
+  # a time varying covariate just means the beta varies with time B = B * X + B(t) * X
+  # when producing predictions this just means that the linear predictors are a function of time
+
+  # select data
+  data = dplyr::select(data, all.vars(formula))
+  dplyr::filter(data, complete.cases(data))
+
+  # run model -- could be useful: f.terms = terms(formula, specials = c("strata", "tt", "cluster"))
+  m.surv = NULL
+  try(m.surv <- withr::with_package("survival", if(random.effects) coxme::coxme(formula, data) else coxph(formula, data)), T)
+
+  # check if we could run it
+  if(is.null(m.surv)) {
+    stop("Could not run model to check for time-varying hazards.")
+  }
+
+  # people need to scope their functions better -- what a pain to debug this -- this might be because of our "try" but sheesh!
+  m.surv$call = call(if(random.effects) "coxme::coxme" else "coxph", formula = formula, data = data)
+
+  # identify time variable
+  time.var = as.matrix(m.surv$y)
+  time.var = if("time" %in% colnames(time.var)) time.var[, "time"] else time.var[, "stop"]
+
+  # check
+  if(is.null(time.var)) {
+    stop("Could not find time variable in formula.")
+  }
+
+  # set var to all variables in the formula if null
+  if(is.null(var)) {
+    var = all.vars(lme4:::nobars(rlang::f_rhs(formula)))
+  }
+
+  # identify relevant variables
+  t.mat = withr::with_package("survival", model.matrix(formula, data))
+  var.name = colnames(t.mat)[which(attr(t.mat, "assign") %in% which(all.vars(delete.response(terms(formula))) %in% var))]
+
+  # check time varying
+  zph.surv = withr::with_package("survival", cox.zph(m.surv, global = F))
+  # plot(zph.surv[1], resid = F)
+
+  # # identify vars with time dependent hazards
+  # rownames(zph.surv$table)[zph.surv$table[, 3] < 0.05]
+
+  # identify which row our variable is
+  num.in.zph = which(rownames(zph.surv$table) %in% var.name)
+
+  # create a tibble with the vars and the p-values
+  var.tdh = tibble::tibble(var = var, var.formula = var.name, p.value = zph.surv$table[num.in.zph, 3])
+
+  # return
+  return(var.tdh)
+}
+
 # function to assemble the model calls for running
 # input: model type, parsed formula, extra arguments
 # output: list to allow a call to model functions (run, predict, residual) and extra model libraries
-produce_model_function = function(model.type, formula.parsed, inference, model.extra.args = NULL) {
+produce_model_function = function(model.type, formula.parsed, inference, model.extra.args = NULL, main.ivs = NULL) {
   # the return list -- could make it an s4 class
   model.extra = list(
     # main model calls
@@ -237,7 +299,7 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
 
   # set base model calls -- defaults to gaussian generalized linear model
   model.extra$model.run = stats::glm
-  model.extra$model.args = list(family = stats::gaussian(link = "identity"), model = F, y = F, trace = F)
+  model.extra$model.args = list(family = stats::gaussian(link = "identity"))
   model.extra$family = model.extra$model.args$family
   model.extra$class = c("frequentist", "glm")
 
@@ -247,8 +309,8 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
 
   # set additional utility functions
   model.extra$converged = function(x) x$boundary == F & x$converged == T
-  model.extra$fitted = function(x) c("mean_PPD" = mean(x$fitted.values, na.rm = T))
-  model.extra$performance = function(x) c("log-posterior" = x$rank - (x$aic / 2))
+  model.extra$fitted = function(x) c("mean_PPD" = mean(stats::fitted(x), na.rm = T))
+  model.extra$performance = function(x) c("log-posterior" = as.numeric(stats::logLik(x))) #c("log-posterior" = x$rank - (x$aic / 2))
   model.extra$special = function(x) c("sigma" = stats::sigma(x))
 
   # additions/changes for binomial
@@ -309,23 +371,6 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
     # predictions for MNL https://cran.r-project.org/web/packages/MNLpred/vignettes/OVA_Predictions_For_MNL.html
   }
 
-  # additions/changes for mixed effects
-  if(formula.parsed$random.effects & inference == "frequentist") {
-    # we cant do some models with random effects
-    if(!model.type %in% c(model.type.list$linear, model.type.list$binary)) {
-      stop(paste("Unable to run --", model.type, "-- with Random Effects"))
-    }
-
-    # model changes
-    model.extra$model.run = lme4::glmer
-    model.extra$model.args = c(model.extra$model.args, list(control = lme4::lmerControl(calc.derivs = F, optimizer = "nloptwrap")))
-    model.extra$class = c(model.extra$class, "merMod")
-
-    # function changes
-    model.extra$coefs = lme4::fixef
-    model.extra$residuals = lme4:::residuals
-  }
-
   # for survival
   if(model.type == model.type.list$survival) {
     model.extra$model.run = survival::coxph
@@ -341,6 +386,58 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
 
     # set library
     model.extra$libraries = "survival"
+
+    # we need to figure out if the main IVs have time-varying hazard
+    tve = identify_tve(formula = formula.parsed$formula, data = formula.parsed$data, var = main.ivs, random.effects = formula.parsed$random.effects)
+
+    # # check if we have a tve problem
+    # tve.probs = as.character(na.omit(tve$var.formula[tve$p.value < 0.05]))
+    #
+    # # if we have a problem then modify our formula to wrap the affected variables -- works for both types of inference
+    # if(length(tve.probs) > 0) {
+    #   formula.modify = formula(paste(". ~", paste(if(inference == "bayesian") "tve(" else "tt(", tve.probs, ")", sep = "", collapse = " + "), "+ . -", paste(tve.probs, collapse = " - ")))
+    #   formula.parsed$formula = update(formula.parsed$formula, formula.modify)
+    # }
+  }
+
+  # additions/changes for mixed effects
+  if(formula.parsed$random.effects & inference == "frequentist") {
+    # check convergence
+    model.extra$converged = function(x) x@optinfo$conv$opt == 0
+
+    # set class
+    model.extra$class = c(model.extra$class, "lmerMod")
+
+    # function changes
+    model.extra$coefs = lme4::fixef
+
+    # we cant do some models with random effects
+    if(model.type == model.type.list$linear) {
+      # model changes -- hassle to use both lmer and glmer since they accept different arguments
+      model.extra$model.run = lme4::lmer
+      model.extra$model.args$family = NULL
+      model.extra$famil = stats::gaussian(link = "identity")
+      model.extra$model.args = c(model.extra$model.args, list(control = lme4::lmerControl(calc.derivs = F, optimizer = "nloptwrap")))
+    } else if(model.type == model.type.list$binary) {
+      # model changes
+      model.extra$model.run = lme4::glmer
+      model.extra$model.args = c(model.extra$model.args, list(control = lme4::glmerControl(calc.derivs = F, optimizer = "nloptwrap")))
+    } else if(model.type == model.type.list$survival) {
+      # model changes
+      model.extra$model.run = coxme::coxme
+      model.extra$model.args = list(ties = "efron", y = T, x = T)
+
+      # function changes -- this makes it run but you wont get anything usable -- need to find the intercept and the mean_PPD
+      model.extra$coefs = coxme::fixef
+      model.extra$converged = function(x) T
+      model.extra$fitted = function(x) c("mean_PPD" = NULL)
+      model.extra$special = function(x) { c("(Intercept)" = 0) }
+
+      # set class
+      model.extra$class = c("frequentist", "survival",  "coxme")
+    } else {
+      stop(paste("Unable to run --", model.type, "-- with Random Effects"))
+    }
   }
 
   # additional stuff for bayesian models
@@ -362,11 +459,11 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
     model.extra$model.args$prior_intercept = rstanarm::normal(0, 2.5)
     model.extra$model.args$prior_aux = rstanarm::exponential(1)
 
-    # set multicore stuff
-    model.extra$model.args$cores = 6
-    model.extra$model.args$chains = 6
+    # set multi-core stuff
+    model.extra$model.args$cores = as.integer(parallel::detectCores(T, T) * 0.5)
+    model.extra$model.args$chains = 1
     model.extra$model.args$warmup = 250
-    model.extra$model.args$iter = 1000
+    model.extra$model.args$iter = 500
     model.extra$model.args$seed = 24021985
 
     # additions/changes for ordered regression
@@ -380,7 +477,7 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
     if(model.type == model.type.list$survival) {
       model.extra$model.run = rstanarm::stan_surv
       model.extra$model.args$prior_aux = NULL
-      model.extra$model.args$basehaz = "exp"
+      model.extra$model.args$basehaz = "ms"
     }
 
     ## need to add in brms zero inflated
