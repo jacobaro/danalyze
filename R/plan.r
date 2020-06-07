@@ -410,7 +410,7 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
   # set sign
   all.transform$sign = sapply(all.transform$var.name, function(x) {
     dat = na.omit(.data[[x]])
-    dplyr::case_when(all(dat >= 0) & all(dat <= 0) ~ "portion", all(dat <= 0) ~ "negative", all(dat >= 0) ~ "positive", T ~ "both")
+    dplyr::case_when(dplyr::n_distinct(dat) == 2 ~ "dummy", all(dat >= 0) & all(dat <= 0) ~ "portion", all(dat <= 0) ~ "negative", all(dat >= 0) ~ "positive", T ~ "both")
   })
 
   # identify portion min or max
@@ -428,9 +428,10 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
     dplyr::case_when(
       # all.transform$skewness > 1.5 & all.transform$portion.min < 0.5 & all.transform$sign == "positive" ~ "log1p",
       # all.transform$skewness > 1.5 & all.transform$sign == "positive" ~ "sqrt",
-      all.transform$skewness > 1.5 & all.transform$portion.min < 0.5 ~ "danalyze::symlog",
-      all.transform$skewness > 1.5 ~ "danalyze::symsqrt",
+      all.transform$sign == "dummy" ~ "",
       all.transform$sign == "portion" ~ "asin",
+      all.transform$skewness > 1.5 & all.transform$portion.min < 0.5 ~ "danalyze::symsqrt",
+      all.transform$skewness > 1.5 ~ "danalyze::symlog",
       T ~ "scale"
     )
 

@@ -175,7 +175,7 @@ determine_model = function(formula.parsed, data) {
         model.type = model.type.list$binary
       }
     }
-    else if(all(data.response >= 0) & all(data.response %% 1 == 0)) {
+    else if(all(data.response >= 0) & all(data.response %% 1 == 0) & dplyr::n_distinct(data.response) > 4) {
       # count data
 
       # check for over dispersion
@@ -220,11 +220,12 @@ identify_tve = function(formula, data, var = NULL, random.effects = F) {
 
   # run model -- could be useful: f.terms = terms(formula, specials = c("strata", "tt", "cluster"))
   m.surv = NULL
-  try(m.surv <- withr::with_package("survival", if(random.effects) coxme::coxme(formula, data) else coxph(formula, data)), T)
+  withr::with_package("survival", try(m.surv <- if(random.effects) coxme::coxme(formula, data) else coxph(formula, data), T))
 
   # check if we could run it
   if(is.null(m.surv)) {
-    stop("Could not run model to check for time-varying hazards.")
+    warning("Could not run model to check for time-varying hazards.")
+    return(NULL)
   }
 
   # people need to scope their functions better -- what a pain to debug this -- this might be because of our "try" but sheesh!
@@ -249,7 +250,15 @@ identify_tve = function(formula, data, var = NULL, random.effects = F) {
   var.name = colnames(t.mat)[which(attr(t.mat, "assign") %in% which(all.vars(delete.response(terms(formula))) %in% var))]
 
   # check time varying
-  zph.surv = withr::with_package("survival", cox.zph(m.surv, global = F))
+  zph.surv = NULL
+  withr::with_package("survival", try(zph.surv <- cox.zph(m.surv, global = F), T))
+
+  # check if we could run it
+  if(is.null(zph.surv)) {
+    warning("Could not estimate relationship between residuals and time.")
+    return(NULL)
+  }
+
   # plot(zph.surv[1], resid = F)
 
   # # identify vars with time dependent hazards
@@ -287,6 +296,7 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
     performance = NULL,
     special = NULL,
     libraries = "stats",
+    has.tve = F,
 
     # additional rstanarm stuff
     cores = NULL,
@@ -390,14 +400,23 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
     # we need to figure out if the main IVs have time-varying hazard
     tve = identify_tve(formula = formula.parsed$formula, data = formula.parsed$data, var = main.ivs, random.effects = formula.parsed$random.effects)
 
-    # # check if we have a tve problem
-    # tve.probs = as.character(na.omit(tve$var.formula[tve$p.value < 0.05]))
-    #
-    # # if we have a problem then modify our formula to wrap the affected variables -- works for both types of inference
-    # if(length(tve.probs) > 0) {
-    #   formula.modify = formula(paste(". ~", paste(if(inference == "bayesian") "tve(" else "tt(", tve.probs, ")", sep = "", collapse = " + "), "+ . -", paste(tve.probs, collapse = " - ")))
-    #   formula.parsed$formula = update(formula.parsed$formula, formula.modify)
-    # }
+    # deal with tve
+    if(!is.null(tve)) {
+      # check if we have a tve problem
+      tve.probs = as.character(na.omit(tve$var.formula[tve$p.value < 0.05]))
+
+      # if we have a problem then modify our formula to wrap the affected variables -- works for both types of inference
+      if(length(tve.probs) > 0) {
+        # set flag
+        model.extra$has.tve = F
+
+        # modify formula
+        formula.modify = formula(paste(". ~", paste(if(inference == "bayesian") "tve(" else "tt(", tve.probs, ")", sep = "", collapse = " + "), "+ . -", paste(tve.probs, collapse = " - ")))
+        formula.parsed$formula = update(formula.parsed$formula, formula.modify)
+      }
+    }
+
+
   }
 
   # additions/changes for mixed effects

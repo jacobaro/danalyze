@@ -464,7 +464,7 @@ create_stan_summary = function(full.matrix, full.names) {
 }
 
 # create model string summary
-create_model_string = function(model.type, formula.parsed, cluster, weights, inference) {
+create_model_string = function(model.type, formula.parsed, cluster, weights, inference, has.tve) {
   # create model string
   model.string = dplyr::case_when(
     formula.parsed$random.effects && formula.parsed$fixed.effects ~ "Random and Fixed Effects",
@@ -489,7 +489,7 @@ create_model_string = function(model.type, formula.parsed, cluster, weights, inf
 
   # assemble string
   return.string =
-    paste0("Model: ", model.type,
+    paste0("Model: ", if(has.tve) paste(model.type, "with TVE") else model.type,
            if(!is.na(model.string)) paste0(" with ", model.string) else "",
            if(!is.na(se.string)) paste0(", Data: ", se.string) else "",
            ", Inference: ", inf.string)
@@ -567,11 +567,11 @@ analysis = function(runs, formula, main.ivs = NULL, data, cluster = NULL, weight
     inference = "frequentist"
   }
 
-  # print
-  cat(paste("Building --", create_model_string(model.type = model.type, formula.parsed = formula.parsed, cluster = cluster, weights = weights, inference = inference), "-- analysis\n"))
-
   # get model extra
   model.functions = produce_model_function(model.type = model.type, formula.parsed = formula.parsed, inference = inference, model.extra.args = model.extra.args, main.ivs = main.ivs)
+
+  # print
+  cat(paste("Building --", create_model_string(model.type = model.type, formula.parsed = formula.parsed, cluster = cluster, weights = weights, inference = inference, has.tve = model.functions$has.tve), "-- analysis\n"))
 
   # run the model -- either bayesian or frequentist
 
