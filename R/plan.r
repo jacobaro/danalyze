@@ -216,7 +216,7 @@ trim_formula = function(formula, data, cluster = NULL, inference = "frequentist"
 #' Function to get create new variables and formulas for testing a set of variable relationships.
 #'
 #' This function produces a set of formulas and new data for testing a research plan.
-#' @param treatment Vector containing variable names for treatments to test.
+#' @param treatment Variable containing names of treatments to test. Can be a vector for just actions or a list that contains both 'action' and 'factor' to test.
 #' @param control Optional vector containing variable names for controls to include.
 #' @param interaction Optional vector containing interactions for the treatment.
 #' @param mediation Optional vector containing mediating variables for the treatment.
@@ -240,12 +240,23 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
   ## CREATE A TABLE WITH THE VARAIBLES
 
   # check to make sure arguments are good
-  if(!is.character(treatment) || !is.data.frame(data)) {
-    stop("The treatment must be a character string and the data must be a dataframe.")
+  if(!(is.list(treatment) | is.character(treatment)) | !is.data.frame(data)) {
+    stop("To create a research plan it is necessary to have a treatment and data.")
+  }
+
+  # the treatment can be a vector or a list -- if a vector than make it an action, if list then also add alternative
+  if(is.list(treatment)) {
+    treatment.action = if(rlang::has_name(treatment, "action")) treatment$action else treatment[[1]]
+    treatment.factor = if(rlang::has_name(treatment, "factor")) treatment$factor else treatment[[2]]
+  } else {
+    treatment.action = treatment
+    treatment.factor = NULL
   }
 
   # make a table of all variables
-  all.vars = list("treatment" = treatment, "control" = control, "interaction" = interaction, "mediation" = mediation)
+  all.vars = list("treatment" = treatment.action, "alternative" = treatment.factor, "control" = control, "interaction" = interaction, "mediation" = mediation)
+
+  # bind
   all.vars = dplyr::bind_rows(lapply(names(all.vars), function(x) if(!is.null(all.vars[[x]])) tibble::tibble(type = x, var.label = names(all.vars[[x]]), var.name = all.vars[[x]])))
 
   # set source, target, and relative
@@ -275,9 +286,6 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
     # link it
     all.vars$var.transform[which(all.vars$var.name %in% names(factor.transform))] = factor.transform[na.omit(match(all.vars$var.name, names(factor.transform)))]
   }
-
-  # set default var.transform
-
 
   # check for missing variables
   all.vars$missing = is.na(all.vars$source) & is.na(all.vars$target)
@@ -366,6 +374,28 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
   .data = dplyr::ungroup(.data)
 
 
+  ## CREATE NAMES TABLE
+
+  # needs to be here because just above we create the "other" vars -- could probably reshuffle when code is refactored
+
+  # create name table
+  name.table = sapply(1:nrow(all.vars), function(x) {
+    lapply(c(if(all.vars$var.name[x] == all.vars$source[x]) "var.name" else c("source", "target"), "relative", "source.other", "target.other"), function(c) {
+      var.label =
+        dplyr::case_when(
+          c == "source" ~ paste0(all.vars$var.label[x], " (Source)"),
+          c == "target" ~ paste0(all.vars$var.label[x], " (Target)"),
+          c == "relative" ~ paste0(all.vars$var.label[x], " (Relative)"),
+          c == "source.other" ~ paste0(all.vars$var.label[x], " (Other to Source)"),
+          c == "target.other" ~ paste0(all.vars$var.label[x], " (Other to Target)"),
+          T ~ all.vars$var.label[x]
+        )
+      tibble::tibble(type = all.vars$type[x], var.label = var.label, var.name = all.vars[[c]][x])
+    })
+  })
+  name.table = dplyr::distinct(dplyr::filter(dplyr::bind_rows(name.table), !is.na(var.name)), type, var.name, .keep_all = T)
+
+
   ## IDENTIFY PROBLEMATIC VARIABLES
 
   # select -- ordering so we keep source and target as highest priority
@@ -375,16 +405,16 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
   bad.var = colnames(.data.col)[unlist(dplyr::summarise_all(.data.col, function(x) any(is.infinite(x)) | any(is.nan(x))))]
 
   # first find variables with little variance -- exclude unit and treatment from check
-  no.var = caret::nearZeroVar(.data.col[!colnames(.data.col) %in% c(unit$unit, all.vars$source[all.vars$type == "treatment"])], freqCut = 95/5, uniqueCut = 0, foreach = T, names = T)
+  no.var = caret::nearZeroVar(.data.col[!colnames(.data.col) %in% c(unit$unit, all.vars$source[all.vars$type %in% c("treatment", "alternative")])], freqCut = 95/5, uniqueCut = 0, foreach = T, names = T)
 
   # find variables that dont vary within our groups -- exclude treatment (unit is part of group_by)
-  .data.group = dplyr::group_by_at(.tbl = .data.col[!colnames(.data.col) %in% all.vars$source[all.vars$type == "treatment"]], .vars = unit$unit)
+  .data.group = dplyr::group_by_at(.tbl = .data.col[!colnames(.data.col) %in% all.vars$source[all.vars$type %in% c("treatment", "alternative")]], .vars = unit$unit)
   group.variation = dplyr::group_map(.data.group, ~caret::nearZeroVar(.x, freqCut = 99/1, uniqueCut = 0, foreach = T, names = T)) # less stringent criteria
   group.variation = 1 - unlist(as.list(table(unlist(group.variation)))) / dplyr::n_groups(.data.group) # what portion of groups have variation
   no.group.var = names(group.variation)[group.variation < 0.01]
 
   # now identify collinear vars -- drop factors could eventually look for linear combinations for factors -- also drops no variation vars since we already exclude those
-  data.for.cor = dplyr::select_if(.data.col[!colnames(.data.col) %in% c(unit$unit, all.vars$source[all.vars$type == "treatment"], no.var, bad.var)], is.numeric)
+  data.for.cor = dplyr::select_if(.data.col[!colnames(.data.col) %in% c(unit$unit, all.vars$source[all.vars$type %in% c("treatment", "alternative")], no.var, bad.var)], is.numeric)
   col.var = caret::findCorrelation(cor(data.for.cor, use = "pairwise.complete"), cutoff = 0.95, names = T, exact = T)
 
   # set final no var -- these are good candidates to drop from our analysis since there is so little variation -- tell the user though
@@ -423,7 +453,11 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
   # identify kurtosis: < 0 = fat tails; > 0 = thin tails; ~0 = normal tails
   all.transform$kurtosis = sapply(all.transform$var.name, function(x) e1071::kurtosis(.data[[x]], na.rm = T, type = 2))
 
-  # set the transform -- when testing mediation analysis its possible for the mediation equation to produce negative values of an otherwise positive variable -- NEED TO ADDRESS!!
+  ## TODO:
+  # when testing mediation analysis its possible for the mediation equation to produce negative values of an otherwise positive variable
+  # variables on very different scales
+
+  # set the transform
   all.transform$transform =
     dplyr::case_when(
       # all.transform$skewness > 1.5 & all.transform$portion.min < 0.5 & all.transform$sign == "positive" ~ "log1p",
@@ -443,7 +477,7 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
   # ultimtely we will want to identify variables that don't vary enough over time, within a unit, or between units
 
   # loop through each treatment
-  all.formulas = lapply(all.vars$source[all.vars$type == "treatment"], function(t) {
+  all.formulas = lapply(all.vars$source[all.vars$type %in% c("treatment", "alternative")], function(t) {
     # assemble list of variables to include
     t.vars = as.character(na.omit(c(
       # other treatments -- keep for current treatment too: [!c(colnames(other.source.vars), colnames(other.target.vars)) %in% c(paste(paste(prefix$other, prefix$source, sep = "."), t, sep = "."), paste(paste(prefix$other, prefix$target, sep = "."), t, sep = "."))]
@@ -492,12 +526,12 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
     # return
     return(f.full) #rlang::list2(!!t := f.full))
   })
-  names(all.formulas) = all.vars$source[all.vars$type == "treatment"]
+  names(all.formulas) = all.vars$source[all.vars$type %in% c("treatment", "alternative")]
 
   # the returned data frame is missing the outcome and any fixed/random effects (i.e., all variables that are not IVs in some way) -- need to think about how to deal with this
 
 
   ## RETURN
 
-  return(list(formulas = all.formulas, data = .data, variables = list(name = all.vars, transform = all.transform)))
+  return(list(formulas = all.formulas, data = .data, variables = list(table = all.vars, transform = all.transform, label = name.table)))
 }

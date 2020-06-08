@@ -18,7 +18,7 @@ research_plan(
 )
 }
 \arguments{
-\item{treatment}{Vector containing variable names for treatments to test.}
+\item{treatment}{Variable containing names of treatments to test. Can be a vector for just actions or a list that contains both 'action' and 'factor' to test.}
 
 \item{control}{Optional vector containing variable names for controls to include.}
 
