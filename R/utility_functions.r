@@ -117,3 +117,30 @@ collapse_time = function(data, time.var, time.factor, group.by, variables) {
   # return
   return(data.full)
 }
+
+# function to create prediction values
+
+#' Easily create values for prediction.
+#'
+#' @export
+#'
+create_values = function(x, .places = 2) {
+  # check
+  if(is.numeric(x)) {
+    # get quantile
+    r = quantile(x, c(0.975, 0.025), na.rm = T)
+
+    # make sure the values are okay
+    if(diff(range(r)) < .Machine$double.eps ^ 0.5) {
+      r = c(max(x), min(x))
+    }
+
+    # round
+    r = round(r, .places)
+  } else {
+    r = unique(x)
+  }
+
+  # return
+  return(r)
+}

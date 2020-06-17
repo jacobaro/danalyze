@@ -12,7 +12,7 @@ research_plan(
   data,
   keep.vars = NULL,
   factor.transform = NULL,
-  prefix = list(source = "sv", target = "tv", other = "oth"),
+  prefix = list(source = "sv", target = "tv", other = "oth", relative = "rel"),
   unit = list(unit = NULL, source = NULL, target = NULL, time = NULL),
   lag = NULL
 )

@@ -9,7 +9,7 @@ add_transform = function(x, transforms = NULL, lag = NULL) {
   x.transform = transforms$transform[match(x.nolag, transforms$var.name)]
 
   # add the transforms
-  r = sapply(1:length(x), function(t) if(!is.na(x.transform[t])) paste0(x.transform[t], "(", x[t], ")") else x[t])
+  r = sapply(1:length(x), function(t) if(!is.na(x.transform[t]) & x.transform[t] != "") paste0(x.transform[t], "(", x[t], ")") else x[t])
 
   # return
   return(r)
@@ -211,38 +211,15 @@ trim_formula = function(formula, data, cluster = NULL, inference = "frequentist"
   return(list(trimmed.formula = formula.new, dropped = variables.drop))
 }
 
-# create a research plan for the given variables
+# internal functions for the research plan
 
-#' Function to get create new variables and formulas for testing a set of variable relationships.
-#'
-#' This function produces a set of formulas and new data for testing a research plan.
-#' @param treatment Variable containing names of treatments to test. Can be a vector for just actions or a list that contains both 'action' and 'factor' to test.
-#' @param control Optional vector containing variable names for controls to include.
-#' @param interaction Optional vector containing interactions for the treatment.
-#' @param mediation Optional vector containing mediating variables for the treatment.
-#' @param data Data containing variables in treatment, control, interaction, and mediation.
-#' @param keep.vars Optional vector of variable names to keep in the data frame returned.
-#' @param prefix List of prefixes for source and target in data as well as for "other" treatments used against source/target. Source and target are optional.
-#' @param unit List of variables that correspond to units, times, and optional source/target in data.
-#' @param lag Optional vector containing the number of lags to use.
-#' @keywords formulas, variables
-#' @export
-#' @examples
-#' research_plan(treatment = c("use.force", "show.force"),
-#' control = c("wdi.economy", "wdi.terrain"), data = data,
-#' unit = list(unit = "dispute.id", time = "time"), lag = 1:2)
-#'
+# create variable table
+create_variable_table = function(data, treatment, control, interaction, mediation, factor.transform, lag, prefix) {
+  # variables that exist and that are created
+  # exist: treatment, control, interaction, and mediation (source and target)
+  # created: relative, other source, other target, lags
 
-research_plan = function(treatment, control = NULL, interaction = NULL, mediation = NULL, data, keep.vars = NULL, factor.transform = NULL,
-                         prefix = list(source = "sv", target = "tv", other = "oth"), unit = list(unit = NULL, source = NULL, target = NULL, time = NULL), lag = NULL) {
-  # below, we identify the variables we need to use, create new data to correspond to these variables, create formulas to use the variables, and then return everything
-
-  ## CREATE A TABLE WITH THE VARAIBLES
-
-  # check to make sure arguments are good
-  if(!(is.list(treatment) | is.character(treatment)) | !is.data.frame(data)) {
-    stop("To create a research plan it is necessary to have a treatment and data.")
-  }
+  ## CREATE VARIABLE TABLE
 
   # the treatment can be a vector or a list -- if a vector than make it an action, if list then also add alternative
   if(is.list(treatment)) {
@@ -259,24 +236,43 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
   # bind
   all.vars = dplyr::bind_rows(lapply(names(all.vars), function(x) if(!is.null(all.vars[[x]])) tibble::tibble(type = x, var.label = names(all.vars[[x]]), var.name = all.vars[[x]])))
 
-  # set source, target, and relative
-  all.vars.st = dplyr::bind_rows(lapply(all.vars$var.name, function(x) {
-    cn = colnames(data)
-    tibble::tibble(
-      source = if(paste(prefix$source, x, sep = ".") %in% cn) paste(prefix$source, x, sep = ".") else x, # if there is no source + target it just gets shoved into source
-      target = if(paste(prefix$target, x, sep = ".") %in% cn) paste(prefix$target, x, sep = ".") else NA_character_,
-      relative = if(!is.na(source) & !is.na(target)) paste("rel", x, sep = ".") else NA_character_
+  # data var names
+  data.var.names = colnames(data)
+
+  # set source, target, relative, source other, target other, and lags if necessary
+  all.vars.st = lapply(1:nrow(all.vars), function(x) {
+    # get variable name
+    var = all.vars$var.name[x]
+
+    # get the base return table
+    r = tibble::tibble(
+      source = dplyr::if_else(paste(prefix$source, var, sep = ".") %in% data.var.names, paste(prefix$source, var, sep = "."), var), # if there is no source + target it just gets shoved into source
+      target = dplyr::if_else(paste(prefix$target, var, sep = ".") %in% data.var.names, paste(prefix$target, var, sep = "."), NA_character_),
+      relative = dplyr::if_else(!is.na(source) & !is.na(target), paste(prefix$relative, var, sep = "."), NA_character_), # to make a relative var need both source and target
+      source.other = dplyr::if_else(all.vars$type[x] == "treatment", paste(prefix$other, prefix$source, var, sep = "."), NA_character_), # other source only for treatment "action"
+      target.other = dplyr::if_else(all.vars$type[x] == "treatment", paste(prefix$other, prefix$target, var, sep = "."), NA_character_) # other target only for treatment "action"
     )
-  }))
+
+    # set lag names
+    if(!is.null(lag) | (is.numeric(lag) && !all(lag == 0))) {
+      r = dplyr::mutate(r, dplyr::across(.fns = lapply(lag[lag != 0], function(l) formula(paste0("~ dplyr::if_else(!is.na(.), paste(., 'l", l, "', sep = '.'), NA_character_)"))), .names = "{col}.l{fn}"))
+    }
+
+    # return
+    return(r)
+  })
+
+  # bind
+  all.vars.st = dplyr::bind_rows(all.vars.st)
 
   # combine
   all.vars = dplyr::bind_cols(all.vars, all.vars.st)
 
   # set the class
-  all.vars = dplyr::mutate(all.vars, factor = sapply(source, function(x) if(!is.na(x) & !is.numeric(data[[x]])) T else F))
+  all.vars = dplyr::mutate(all.vars, .factor = sapply(source, function(x) if(!is.na(x) & !is.numeric(data[[x]])) T else F))
 
   # set default transform
-  all.vars$var.transform = sapply(all.vars$factor, function(x) if(x) function(y) as.numeric(as.factor(y)) else NA)
+  all.vars$var.transform = sapply(all.vars$.factor, function(x) if(x) function(y) as.numeric(as.factor(y)) else NA)
 
   # add functions
   if(length(factor.transform) > 0) {
@@ -288,133 +284,148 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
   }
 
   # check for missing variables
-  all.vars$missing = is.na(all.vars$source) & is.na(all.vars$target)
+  all.vars$.missing = is.na(all.vars$source) & is.na(all.vars$target)
 
   # send a warning if variables are missing
-  if(any(all.vars$missing)) {
-    warning(paste("The following variables are missing both source and target names and will be excluded from the plan:", paste(all.vars$var.name[all.vars$missing], collapse = ", ")))
+  if(any(all.vars$.missing)) {
+    warning(paste("The following variables are missing both source and target names and will be excluded from the plan:", paste(all.vars$var.name[all.vars$.missing], collapse = ", ")))
   }
 
   # select the columns we need
-  all.vars = dplyr::select(dplyr::filter(all.vars, missing == F), type, factor, var.transform, var.label, var.name, source, target, relative)
+  all.vars = dplyr::select(dplyr::filter(all.vars, .missing == F), type, var.transform, var.label, var.name, source, target, relative, dplyr::everything(), -.missing, -.factor)
 
 
+  ## CREATE NAME TABLE
 
-  ## SELECT THE DATA
+  # create name table
+  name.table = sapply(1:nrow(all.vars), function(x) {
+    # set the columns to run through
+    name.columns = c(if(all.vars$var.name[x] == all.vars$source[x]) "var.name" else c("source", "target"), "relative", "source.other", "target.other")
+
+    # loop through
+    lapply(name.columns, function(c) {
+      if(!is.na(all.vars[[c]][x])) {
+        lapply(c(0, lag), function(l) {
+          # set lag
+          var.lag = dplyr::if_else(l > 0, paste0(", Lag: ", l, ")"), ")")
+          var.lag.name = dplyr::if_else(l > 0, paste0(all.vars[[c]][x], ".l", l), all.vars[[c]][x])
+
+          # set the label
+          var.label =
+            dplyr::case_when(
+              c == "source" ~ paste0(all.vars$var.label[x], " (Source", var.lag),
+              c == "target" ~ paste0(all.vars$var.label[x], " (Target", var.lag),
+              c == "relative" ~ paste0(all.vars$var.label[x], " (Relative", var.lag),
+              c == "source.other" ~ paste0(all.vars$var.label[x], " (Other to Source", var.lag),
+              c == "target.other" ~ paste0(all.vars$var.label[x], " (Other to Target", var.lag),
+              T ~ paste0(all.vars$var.label[x], var.lag)
+            )
+
+          # return the tibble
+          tibble::tibble(type = all.vars$type[x], var.label = var.label, var.name = var.lag.name)
+        })
+      }
+    })
+  })
+
+  # bind and make distinct
+  name.table = dplyr::distinct(dplyr::filter(dplyr::bind_rows(unlist(name.table, recursive = F)), !is.na(var.name)), type, var.name, .keep_all = T)
+
+
+  ## RETURN
+
+  # return the variable table
+  return(list(variables = all.vars, names = name.table))
+}
+
+# select the data
+create_plan_data = function(data, all.vars, lag, prefix, unit, keep.vars) {
+  # select the data
 
   # vars to select
   vars.to.select = unique(na.omit(c(keep.vars, unlist(unit), all.vars$source, all.vars$target)))
 
-  # make sure we have the variables -- shoud modify to allow it to continue without these variables
+  # make sure we have the variables
   if(!all(vars.to.select %in% colnames(data))) {
     warning(paste("The following variables are not in the data:", paste(vars.to.select[!vars.to.select %in% colnames(data)], collapse = ", ")))
   }
 
-  # select
-  .data = dplyr::select(data, tidyselect::any_of(vars.to.select))
-
-
-  ## CREATE NEW VARIABLES
+  # select and subset the relevant data to allow us to easily check variance, etc.
+  .data = dplyr::select(dplyr::ungroup(data), tidyselect::any_of(vars.to.select))
 
   # the extent of what we want to create: lags of treatment, control, interaction and mediation; other values of treatment against source/target
 
-  # first create relative variables
+  # arrange
+  .data = dplyr::arrange_at(.tbl = .data, .vars = c(unit$unit, unit$source, unit$target, unit$time))
+
+  #  create other values and add to our data frame -- done first so that we can create lags later -- need to deal with FACTOR VARS
+  if(!is.null(unit$source)) {
+    other.source.vars = build_other_values(.data, !!all.vars$var.name[all.vars$type == "treatment"], unit = c(unit$unit, unit$source, unit$time), prefix = paste(prefix$other, prefix$source, sep = "."))
+    .data = dplyr::bind_cols(.data, other.source.vars)
+  }
+
+  # do also for target if present
+  if(!is.null(unit$target)) {
+    other.target.vars = build_other_values(.data, !!all.vars$var.name[all.vars$type == "treatment"], unit = c(unit$unit, unit$target, unit$time), prefix = paste(prefix$other, prefix$target, sep = "."))
+    .data = dplyr::bind_cols(.data, other.target.vars)
+  }
+
+  # create relative variables and lags
   for(i in 1:nrow(all.vars)) {
-    # we have a source and target so we can make a relative variable -- also probably just need to do unique values
+    # we have a source and target so we can make a relative variable
     if(!is.na(all.vars$relative[i])) {
       # set source and target
       t.source = .data[[all.vars$source[i]]]
       t.target = .data[[all.vars$target[i]]]
 
       # if not numeric then process
-      if(all.vars$factor[i]) {
+      if(!is.na(all.vars$var.transform[i])) {
         t.source = all.vars$var.transform[[i]](t.source)
         t.target = all.vars$var.transform[[i]](t.target)
       }
 
-      # set relative var
+      # set relative var and if both are zero set relative var to zero -- could create relative variables in this way or in the formula: ~ source + target + I(source / (source + target))
       .data[[paste("rel", all.vars$var.name[i], sep = ".")]] = dplyr::if_else(t.source == 0 & t.target == 0, 0, t.source / (t.source + t.target))
     }
 
-    # could create relative variables in this way or in the formula: ~ source + target + I(source / (source + target))
+    # we need to make lags so make lags
+    if(!is.null(lag) | (is.numeric(lag) && !all(lag == 0))) {
+      # variables to create lags for
+      col.other.names = na.omit(c(all.vars$source[i], all.vars$target[i], all.vars$relative[i], all.vars$source.other[i], all.vars$target.other[i]))
+
+      # create the lags
+      .data = dplyr::mutate(.data, dplyr::across(.cols = tidyselect::any_of(col.other.names), .fns = lapply(lag[lag != 0], function(l) formula(paste0("~ lag(., n = ", l, ")"))), .names = "{col}.l{fn}"))
+
+      # zeros should be okay instead of NA for actions but not for control or factors
+    }
   }
 
-  # create raw vector for other values -- these are just created for the treatment
-  all.vars$source.other = NA_character_
-  all.vars$target.other = NA_character_
-
-  # now create other values and add to our data frame -- need to deal with FACTOR VARS
-  other.source.vars = build_other_values(.data, !!all.vars$var.name[all.vars$type == "treatment"], unit = c(unit$unit, unit$source, unit$time), prefix = paste(prefix$other, prefix$source, sep = "."))
-  .data = dplyr::bind_cols(.data, other.source.vars)
-  all.vars$source.other[all.vars$type == "treatment"] = colnames(other.source.vars)
-
-  # do also for target if present
-  if(!is.null(unit$target)) {
-    other.target.vars = build_other_values(.data, !!all.vars$var.name[all.vars$type == "treatment"], unit = c(unit$unit, unit$target, unit$time), prefix = paste(prefix$other, prefix$target, sep = "."))
-    .data = dplyr::bind_cols(.data, other.target.vars)
-    all.vars$target.other[all.vars$type == "treatment"] = colnames(other.target.vars)
-  }
-
-  # arrange
-  .data = dplyr::arrange_at(.tbl = .data, .vars = c(unit$unit, unit$source, unit$target, unit$time))
-
-  # add time lags
-  if(is.numeric(lag)) {
-    # now create lags
-    .data = dplyr::mutate_at(
-      dplyr::group_by_at(.tbl = .data, .vars = c(unit$unit, unit$source, unit$target)),
-      .vars = unique(na.omit(c(all.vars$source, all.vars$target, all.vars$relative, all.vars$source.other, all.vars$target.other))),
-      .funs = sapply(lag, function(x) rlang::list2(!!paste0("l", x) := formula(paste0("~ lag(., ", x, ")"))))
-    )
-
-    # TODO: need to deal with just one .vars
-  }
-
-  # ungroup data
+  # ungroup data just to make sure
   .data = dplyr::ungroup(.data)
 
+  # return
+  return(.data)
+}
 
-  ## CREATE NAMES TABLE
-
-  # needs to be here because just above we create the "other" vars -- could probably reshuffle when code is refactored
-
-  # create name table
-  name.table = sapply(1:nrow(all.vars), function(x) {
-    lapply(c(if(all.vars$var.name[x] == all.vars$source[x]) "var.name" else c("source", "target"), "relative", "source.other", "target.other"), function(c) {
-      var.label =
-        dplyr::case_when(
-          c == "source" ~ paste0(all.vars$var.label[x], " (Source)"),
-          c == "target" ~ paste0(all.vars$var.label[x], " (Target)"),
-          c == "relative" ~ paste0(all.vars$var.label[x], " (Relative)"),
-          c == "source.other" ~ paste0(all.vars$var.label[x], " (Other to Source)"),
-          c == "target.other" ~ paste0(all.vars$var.label[x], " (Other to Target)"),
-          T ~ all.vars$var.label[x]
-        )
-      tibble::tibble(type = all.vars$type[x], var.label = var.label, var.name = all.vars[[c]][x])
-    })
-  })
-  name.table = dplyr::distinct(dplyr::filter(dplyr::bind_rows(name.table), !is.na(var.name)), type, var.name, .keep_all = T)
-
-
-  ## IDENTIFY PROBLEMATIC VARIABLES
-
+# function to identify variables that should not be included in the analysis
+identify_problematic_variables = function(.data, unit.main, variables.to.check) {
   # select -- ordering so we keep source and target as highest priority
-  .data.col = dplyr::select(.data, unique(na.omit(c(unit$unit, all.vars$relative, all.vars$source.other, all.vars$target.other, all.vars$source, all.vars$target))))
+  .data.col = dplyr::select(.data, tidyselect::any_of(c(unit.main, variables.to.check)))
 
   # remove entirely problematic variables
   bad.var = colnames(.data.col)[unlist(dplyr::summarise_all(.data.col, function(x) any(is.infinite(x)) | any(is.nan(x))))]
 
   # first find variables with little variance -- exclude unit and treatment from check
-  no.var = caret::nearZeroVar(.data.col[!colnames(.data.col) %in% c(unit$unit, all.vars$source[all.vars$type %in% c("treatment", "alternative")])], freqCut = 95/5, uniqueCut = 0, foreach = T, names = T)
+  no.var = caret::nearZeroVar(.data.col[!colnames(.data.col) %in% unit.main], freqCut = 95/5, uniqueCut = 0, foreach = T, names = T)
 
   # find variables that dont vary within our groups -- exclude treatment (unit is part of group_by)
-  .data.group = dplyr::group_by_at(.tbl = .data.col[!colnames(.data.col) %in% all.vars$source[all.vars$type %in% c("treatment", "alternative")]], .vars = unit$unit)
-  group.variation = dplyr::group_map(.data.group, ~caret::nearZeroVar(.x, freqCut = 99/1, uniqueCut = 0, foreach = T, names = T)) # less stringent criteria
+  .data.group = dplyr::group_by_at(.tbl = .data.col, .vars = unit.main)
+  group.variation = dplyr::group_map(.data.group, ~ caret::nearZeroVar(.x, freqCut = 99/1, uniqueCut = 0, foreach = T, names = T)) # less stringent criteria
   group.variation = 1 - unlist(as.list(table(unlist(group.variation)))) / dplyr::n_groups(.data.group) # what portion of groups have variation
   no.group.var = names(group.variation)[group.variation < 0.01]
 
   # now identify collinear vars -- drop factors could eventually look for linear combinations for factors -- also drops no variation vars since we already exclude those
-  data.for.cor = dplyr::select_if(.data.col[!colnames(.data.col) %in% c(unit$unit, all.vars$source[all.vars$type %in% c("treatment", "alternative")], no.var, bad.var)], is.numeric)
+  data.for.cor = dplyr::select_if(.data.col[!colnames(.data.col) %in% c(unit.main, no.var, bad.var)], is.numeric)
   col.var = caret::findCorrelation(cor(data.for.cor, use = "pairwise.complete"), cutoff = 0.95, names = T, exact = T)
 
   # set final no var -- these are good candidates to drop from our analysis since there is so little variation -- tell the user though
@@ -422,17 +433,16 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
 
   # we could also try to find linear combinations but probably not needed at this step -- can also just rely on priors to address this
 
-  # remove vars that are problematic and drop vars that no longer have any values to test
-  all.vars = dplyr::mutate_at(all.vars, .vars = dplyr::vars(source:target.other), function(x) { x[x %in% all.prob.vars] = NA_character_; x })
-  all.vars = dplyr::filter(all.vars, !is.na(source) | !is.na(target) | !is.na(relative) | !is.na(source.other) | !is.na(target.other))
+  # return
+  return(all.prob.vars)
+}
 
-
-  ## IDENTIFY VARIABLE TRANSFORMATIONS
-
+# function to identify variable transformations
+identify_variable_transformations = function(.data, variables.to.transform) {
   # helpful: https://www.ibm.com/support/pages/transforming-variable-normality-parametric-statistics
 
   # need to take care of source, target, other source, other target, and source/target/other lags
-  all.transform = tibble::tibble(var.name = unique(na.omit(c(all.vars$source, all.vars$target, all.vars$source.other, all.vars$target.other))))
+  all.transform = tibble::tibble(var.name = variables.to.transform)
 
   # dont transform factor variables so just drop them for now
   all.transform = all.transform[sapply(all.transform$var.name, function(x) is.numeric(.data[[x]])), ]
@@ -464,42 +474,46 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
       # all.transform$skewness > 1.5 & all.transform$sign == "positive" ~ "sqrt",
       all.transform$sign == "dummy" ~ "",
       all.transform$sign == "portion" ~ "asin",
-      all.transform$skewness > 1.5 & all.transform$portion.min < 0.5 ~ "danalyze::symsqrt",
+      # all.transform$skewness > 1.5 & all.transform$portion.min < 0.5 ~ "danalyze::symsqrt",
       all.transform$skewness > 1.5 ~ "danalyze::symlog",
       T ~ "scale"
     )
 
+  # return
+  return(all.transform)
+}
 
-  ## CREATE FORMULAS FOR TESTING
-
+# function to create formulas to test for the research plan
+create_research_formulas = function(all.vars, all.transform, lag) {
   # idea is to create a formula: each treatment, each treatment interacted with a condition, each treatment as a cause of a mediator (+ the treatment and the mediator)
 
-  # ultimtely we will want to identify variables that don't vary enough over time, within a unit, or between units
+  # ultimately we will want to identify variables that don't vary enough over time, within a unit, or between units
+
+  # treatments to loop through
+  main.ivs = all.vars$source[all.vars$type %in% c("treatment", "alternative")]
 
   # loop through each treatment
-  all.formulas = lapply(all.vars$source[all.vars$type %in% c("treatment", "alternative")], function(t) {
-    # assemble list of variables to include
-    t.vars = as.character(na.omit(c(
-      # other treatments -- keep for current treatment too: [!c(colnames(other.source.vars), colnames(other.target.vars)) %in% c(paste(paste(prefix$other, prefix$source, sep = "."), t, sep = "."), paste(paste(prefix$other, prefix$target, sep = "."), t, sep = "."))]
-      all.vars$source.other,
-      all.vars$target.other,
-
-      # source controls
-      all.vars$source[all.vars$type == "control"],
-
-      # target controls
-      all.vars$target[all.vars$type == "control"],
-
-      # relative controls
-      all.vars$relative[all.vars$type == "control"]
-    )))
-
-    # add lags
-    if(is.numeric(lag)) {
-      t.lags = as.character(sapply(paste0("l", lag), function(x) paste(c(t, t.vars), x, sep = "_")))
-    } else {
-      t.lags = NULL
+  all.formulas = lapply(main.ivs, function(t) {
+    # a lag of "0" means just the normal variable
+    if(is.null(lag)) {
+      lag = 0
     }
+
+    # columns we want to include
+    t.vars = lapply(lag, function(l) {
+      # column select
+      c.extra = dplyr::if_else(l == 0, "", paste0(".l", l))
+
+      # return var names
+      c(all.vars[all.vars$type == "control", paste0("source", c.extra)],
+        all.vars[all.vars$type == "control", paste0("target", c.extra)],
+        all.vars[all.vars$type == "control", paste0("relative", c.extra)],
+        all.vars[, paste0("source.other", c.extra)],
+        all.vars[, paste0("target.other", c.extra)])
+    })
+
+    # get character vectoe
+    t.vars = as.character(na.omit(unlist(t.vars)))
 
     # pull from rlang
     `:=` = rlang:::`:=`
@@ -509,16 +523,16 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
     # old: rlang::list2(!!t := as.formula(paste("~", paste(add_transform(c(t, t.vars, t.lags)), collapse = " + ")), env = .GlobalEnv))
 
     # combine to create the main formula
-    f.base = create_new_formula(iv = t, controls = c(t.vars[!t.vars %in% c(t)], t.lags), transforms = all.transform, lag = lag)
+    f.base = create_new_formula(iv = t, controls = t.vars[!t.vars %in% c(t)], transforms = all.transform, lag = lag)
 
     # create formulas for interactions
     f.int.vars = na.omit(c(all.vars$source[all.vars$type == "interaction"], all.vars$target[all.vars$type == "interaction"], all.vars$relative[all.vars$type == "interaction"]))
-    f.int = lapply(f.int.vars, function(i) create_new_formula(iv = c(t, i), controls = c(t.vars[!t.vars %in% c(i, t)], t.lags), transforms = all.transform, lag = lag))
+    f.int = lapply(f.int.vars, function(i) create_new_formula(iv = c(t, i), controls = t.vars[!t.vars %in% c(t, i)], transforms = all.transform, lag = lag))
 
     # create formulas for mediating effects -- requires two "med ~ iv" and "outcome ~ iv + med"
     f.med.vars = dplyr::if_else(sapply(all.vars$target[all.vars$type == "mediation"], is.null), all.vars$source[all.vars$type == "mediation"], all.vars$target[all.vars$type == "mediation"])
-    f.med = lapply(f.med.vars, function(m) list(mediator = create_new_formula(dv = m, iv = t, controls = c(t.vars[!t.vars %in% c(m, t)], t.lags), transforms = all.transform, lag = lag),
-                                                outcome = create_new_formula(iv = c(t, m), type = "+", controls = c(t.vars[!t.vars %in% c(m, t)], t.lags), transforms = all.transform, lag = lag)))
+    f.med = lapply(f.med.vars, function(m) list(mediator = create_new_formula(dv = m, iv = t, controls = t.vars[!t.vars %in% c(t, m)], transforms = all.transform, lag = lag),
+                                                outcome = create_new_formula(iv = c(t, m), type = "+", controls = t.vars[!t.vars %in% c(t, m)], transforms = all.transform, lag = lag)))
 
     # create full return
     f.full = list(main = f.base, interaction = f.int, mediation = f.med)
@@ -526,12 +540,98 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
     # return
     return(f.full) #rlang::list2(!!t := f.full))
   })
+
+  # set names
   names(all.formulas) = all.vars$source[all.vars$type %in% c("treatment", "alternative")]
+
+  # return
+  return(all.formulas)
+}
+
+# create a research plan for the given variables
+
+#' Function to get create new variables and formulas for testing a set of variable relationships.
+#'
+#' This function produces a set of formulas and new data for testing a research plan.
+#' @param treatment Variable containing names of treatments to test. Can be a vector for just actions or a list that contains both 'action' and 'factor' to test.
+#' @param control Optional vector containing variable names for controls to include.
+#' @param interaction Optional vector containing interactions for the treatment.
+#' @param mediation Optional vector containing mediating variables for the treatment.
+#' @param data Data containing variables in treatment, control, interaction, and mediation.
+#' @param keep.vars Optional vector of variable names to keep in the data frame returned.
+#' @param prefix List of prefixes for source and target in data as well as for "other" treatments used against source/target. Source and target are optional.
+#' @param unit List of variables that correspond to units, times, and optional source/target in data.
+#' @param lag Optional vector containing the number of lags to use.
+#' @keywords formulas, variables
+#' @export
+#' @examples
+#' research_plan(treatment = c("use.force", "show.force"),
+#' control = c("wdi.economy", "wdi.terrain"), data = data,
+#' unit = list(unit = "dispute.id", time = "time"), lag = 1:2)
+#'
+
+research_plan = function(treatment, control = NULL, interaction = NULL, mediation = NULL, data, keep.vars = NULL, factor.transform = NULL,
+                         prefix = list(source = "sv", target = "tv", other = "oth", relative = "rel"), unit = list(unit = NULL, source = NULL, target = NULL, time = NULL), lag = NULL) {
+  # below, we identify the variables we need to use, create new data to correspond to these variables, create formulas to use the variables, and then return everything
+
+  # check to make sure arguments are good
+  if(!(is.list(treatment) | is.character(treatment)) | !is.data.frame(data)) {
+    stop("To create a research plan it is necessary to have a treatment and data.")
+  }
+
+
+  ## CREATE VARIABLE TABLE
+
+  # TODO: could add a consecutive transformation (past or within X * lag)
+
+  # create a table with the variables
+  variable.table = create_variable_table(data = data, treatment = treatment, control = control, interaction = interaction, mediation = mediation, factor.transform = factor.transform, lag = lag, prefix = prefix)
+
+  # set all vars
+  all.vars = variable.table$variables
+
+
+  ## SELECT DATA AND CREATE NEW VARIABLES
+
+  # select the data and create new variables
+  .data = create_plan_data(data = data, all.vars = variable.table$variables, lag = lag, prefix = prefix, unit = unit, keep.vars = keep.vars)
+
+
+  ## IDENTIFY PROBLEMATIC VARIABLES
+
+  # list of variables to check -- all variables except the main treatment action/alternative variables
+  variables.to.check = na.omit(unlist(dplyr::select(variable.table$variables, dplyr::everything(), -type, -var.transform, -var.label, -var.name)))
+  variables.to.check = as.character(variables.to.check[!variables.to.check %in% c(variable.table$variables$source[variable.table$variables$type %in% c("treatment", "alternative")],
+                                                                                  variable.table$variables$target[variable.table$variables$type %in% c("treatment", "alternative")])])
+
+  # run the function to identify problematic variables
+  all.prob.vars = identify_problematic_variables(.data = .data, unit.main = unit$unit, variables.to.check = variables.to.check)
+
+  # remove vars that are problematic and drop vars that no longer have any values to test
+  variable.table$variables = dplyr::mutate_all(variable.table$variables, .funs = function(x) { x[x %in% all.prob.vars] = NA_character_; x })
+  variable.table$variables = dplyr::filter(variable.table$variables, !is.na(source) | !is.na(target) | !is.na(relative) | !is.na(source.other) | !is.na(target.other))
+
+
+  ## IDENTIFY VARIABLE TRANSFORMATIONS
+
+  # set variables that we want to identify transformations for
+  variables.to.transform = unique(na.omit(unlist(dplyr::select(variable.table$variables, -c(type:var.name)))))
+
+  # identify variable transformations
+  all.transform = identify_variable_transformations(.data = .data, variables.to.transform = variables.to.transform)
+
+
+  ## CREATE FORMULAS FOR TESTING
+
+  # create formulas
+  all.formulas = create_research_formulas(all.vars = variable.table$variables, all.transform = all.transform, lag = lag)
 
   # the returned data frame is missing the outcome and any fixed/random effects (i.e., all variables that are not IVs in some way) -- need to think about how to deal with this
 
 
   ## RETURN
 
-  return(list(formulas = all.formulas, data = .data, variables = list(table = all.vars, transform = all.transform, label = name.table)))
+  # return all
+  return(list(formulas = all.formulas, data = .data, variables = list(table = variable.table$variables, transform = all.transform, label = variable.table$names)))
 }
+
