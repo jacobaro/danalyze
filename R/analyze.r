@@ -743,3 +743,307 @@ analysis = function(runs, formula, main.ivs = NULL, data, cluster = NULL, weight
   return(out)
 }
 
+
+# function to analyze a full research plan automatically
+
+#' Function to automatically analyze a research plan in a systematic and efficient manner.
+#'
+#' @export
+#'
+analyze_plan = function(research.plan, outcomes, only.run = NULL, run.basic = T, run.mediation = T, run.interaction = T) {
+  # first check to make sure research.plan is correctly formatted
+  if(!is.list(research.plan) | !rlang::has_name(research.plan, "formulas") | !rlang::has_name(research.plan, "data") | !rlang::has_name(research.plan, "variables")) {
+    stop("The research plan does not have the correct fields please check to make sure the variable is correct.")
+  }
+
+  # get list of main variables to run
+  main.variables = names(research.plan$formulas)
+
+  # subset to only run
+  if(!is.null(only.run)) {
+    main.variables = main.variables[main.variables %in% only.run]
+  }
+
+  # make sure we still have variables to run
+  if(is.null(main.variables) || length(main.variables) < 1) {
+    stop("No variables in research pla nto run analysis on.")
+  }
+
+  # console output
+  cat(paste0("\n\n** Running research plan with -- ", length(main.variables), " -- variable(s).\n"))
+
+  # loop through outcomes
+  all.outcomes = lapply(names(outcomes), function(dv) {
+    # for each outcome, loop through the variables and run the main, interaction, and mediator
+
+    # console output
+    cat(paste0("\n** Working on outcome -- ", dv, ".\n"))
+
+    # set data
+    temp.data = research.plan$data
+
+    # set outcome
+    temp.data$.outcome = outcomes[[dv]]
+
+    # loop through variables
+    r.variable = lapply(main.variables, function(variable) {
+      # console output
+      cat(paste0("\n** Identifying correlates of -- ", variable, ".\n"))
+
+      # add random/fixed effects if needed
+      if(!is.null(research.plan$effects)) {
+        formula.effects = lasso2:::merge.formula(danalyze::formula_iv_as_dv(research.plan$formulas[[variable]]$main), research.plan$effects)
+      } else {
+        formula.effects = danalyze::formula_iv_as_dv(research.plan$formulas[[variable]]$main)
+      }
+
+      # get the list of variables to drop for our main effect
+      main.drop = danalyze::trim_formula(formula = formula.effects, data = temp.data, cluster = research.plan$cluster, threshold = 0.3)
+
+      # run main models if needed
+      if(run.basic) {
+        # console output
+        cat(paste0("\n** Running main model -- ", variable, ".\n"))
+
+        # add the outcome to our formula so we now have a testable formula
+        new.formula = lasso2:::merge.formula(update(formula(research.plan$formulas[[variable]]$main, to.drop = main.drop$dropped), research.plan$outcome), research.plan$effects)
+
+        # analyze our formula and data
+        analysis = NULL
+        try(analysis <- danalyze::analysis(
+          runs = 500,
+          formula = new.formula,
+          main.ivs = variable,
+          data = temp.data,
+          inference = "bayesian",
+          model.extra.args = list(prior = rstanarm::normal(0, 1), prior_intercept = rstanarm::normal(0, 1), adapt_delta = 0.9, warmup = 250, iter = 500)
+        ), T)
+
+        if(!is.null(analysis)) {
+          # create prediction for treatment
+          prediction = danalyze::pr_list(!!variable := danalyze::create_values(temp.data[[variable]]))
+
+          # set times -- this needs to be fixed so that it is not hard coded
+          times = unique(quantile(temp.data$.time.end, seq(1, 9, by = 2) / 10, na.rm = T))
+
+          # get results
+          results = danalyze::results(object = analysis, predictions = prediction, draws = 500, times = times)
+
+          # save -- double list so it is easier to use purrr
+          r.main = list(list(variable = variable, model = analysis, coefficients = results$coefficients, predictions = results$predictions, contrasts = results$contrasts))
+        } else {
+          r.main = list(list(variable = variable, model = NULL, coefficients = NULL, predictions = NULL, contrasts = NULL))
+        }
+      } else {
+        r.main = NULL
+      }
+
+      # now run the interaction
+      if(run.interaction) {
+        # get list of interaction variables to run
+        interaction.variables = names(research.plan$formulas[[variable]]$interaction)
+
+        # loop through interaction variables
+        r.interaction = lapply(interaction.variables[1:2], function(interaction) {
+          # console output
+          cat(paste0("\n** Running interaction -- ", variable, " X ", interaction, ".\n"))
+
+          # trim the formula -- now we just have variables that correlate with our treatment -- should also make it work for multiple variables
+          new.formula = lasso2:::merge.formula(update(formula(research.plan$formulas[[variable]]$interaction[[interaction]], to.drop = main.drop$dropped), research.plan$outcome), research.plan$effects)
+
+          # analyze our formula and data
+          analysis = NULL
+          try(analysis <- danalyze::analysis(
+            runs = 500,
+            formula = new.formula,
+            main.ivs = variable,
+            data = temp.data,
+            inference = "bayesian",
+            model.extra.args = list(prior = rstanarm::normal(0, 1), prior_intercept = rstanarm::normal(0, 1), adapt_delta = 0.9, warmup = 250, iter = 500)
+          ), T)
+
+          # save if possible
+          if(!is.null(analysis)) {
+            # create prediction for treatment
+            prediction = danalyze::pr_list(!!variable := danalyze::create_values(temp.data[[variable]]), !!interaction := danalyze::create_values(temp.data[[interaction]]), .constant = interaction)
+
+            # set times
+            times = unique(quantile(temp.data$.time.end, seq(1, 9, by = 2) / 10, na.rm = T))
+
+            # get results
+            results = danalyze::results(object = analysis, predictions = prediction, draws = 500, times = times)
+
+            # save
+            r = list(variable = variable, interaction = interaction, model = analysis, coefficients = results$coefficients, predictions = results$predictions, contrasts = results$contrasts)
+          } else {
+            r = list(variable = variable, interaction = interaction, model = NULL, coefficients = NULL, predictions = NULL, contrasts = NULL)
+          }
+
+          # return
+          return(r)
+        })
+      } else {
+        r.interaction = NULL
+      }
+
+      # now run the mediation if we have any significant effects
+      if(run.mediation && is.list(r.main) && (is.null(r.main[[1]]$contrasts) || any(r.main[[1]]$contrasts$p.value < 0.1))) {
+        # get list of interaction variables to run
+        mediation.variables = names(research.plan$formulas[[variable]]$mediation)
+
+        # loop through mediation variables
+        r.mediation = lapply(mediation.variables[1:2], function(mediation) {
+          # need to deal with both formulas in turn -- first mediator then outcome
+
+          # console output
+          cat(paste0("\n** Running mediator -- ", variable, " -> ", mediation, ".\n"))
+
+          # mediator formula
+          new.formula.med = lasso2:::merge.formula(formula(research.plan$formulas[[variable]]$mediation[[mediation]]$mediator, to.drop = main.drop$dropped), research.plan$effects)
+
+          # don't check thee mediator too -- just check the treatment for now
+          new.formula.out = lasso2:::merge.formula(update(formula(research.plan$formulas[[variable]]$mediation[[mediation]]$outcome, to.drop = main.drop$dropped), research.plan$outcome), research.plan$effects)
+
+          # first part of mediation
+          analysis.med = NULL
+          try(analysis.med <- danalyze::analysis(
+            runs = 500,
+            formula = new.formula.med,
+            main.ivs = variable,
+            data = temp.data,
+            inference = "bayesian",
+            model.extra.args = list(prior = rstanarm::normal(0, 1), prior_intercept = rstanarm::normal(0, 1), adapt_delta = 0.9, warmup = 250, iter = 500)
+          ), T)
+
+          # second part of mediation
+          analysis.out = NULL
+          try(analysis.out <- danalyze::analysis(
+            runs = 500,
+            formula = new.formula.out,
+            main.ivs = variable,
+            data = temp.data,
+            inference = "bayesian",
+            model.extra.args = list(prior = rstanarm::normal(0, 1), prior_intercept = rstanarm::normal(0, 1), adapt_delta = 0.9, warmup = 250, iter = 500)
+          ), T)
+
+
+          if(!is.null(analysis.med) & !is.null(analysis.out)) {
+            # create prediction for treatment
+            prediction = danalyze::pr_list(!!variable := danalyze::create_values(temp.data[[variable]]))
+
+            # set times -- this needs to be fixed so that it is not hard coded
+            times = unique(quantile(temp.data$.time.end, seq(1, 9, by = 2) / 10, na.rm = T))
+
+            # get mediation results
+            results = danalyze::results_mediation(m.mediator = analysis.med, m.outcome = analysis.out, predictions = prediction, times = as.integer(median(times)), .outcome = dv)
+
+            # save
+            r = list(variable = variable, mediation = mediation, model.med = analysis.med, model.out = analysis.out, contrasts = results)
+          } else {
+            r = list(variable = variable, mediation = mediation, model.med = NULL, model.out = NULL, contrasts = NULL)
+          }
+
+          # return
+          return(r)
+        })
+      } else {
+        r.mediation = NULL
+      }
+
+      # set the names
+      if(!is.null(r.main)) { names(r.main) = purrr::map_chr(r.main, "variable") }
+      if(!is.null(r.interaction)) { names(r.interaction) = purrr::map_chr(r.interaction, "interaction") }
+      if(!is.null(r.mediation)) { names(r.mediation) = purrr::map_chr(r.mediation, "mediation") }
+
+      # return
+      return(list(variable = variable, main = r.main, interaction = r.interaction, mediation = r.mediation))
+    })
+
+    # set the names
+    names(r.variable) = purrr::map_chr(r.variable, "variable")
+
+    # add coefficients and predictions
+
+    # get the main coefficients
+    f.main.coefficients = dplyr::bind_rows(lapply(names(r.variable), function(x) {
+      if(!is.null(r.variable[[x]]$main)) {
+        purrr::map_dfr(r.variable[[x]]$main, "coefficients", .id = ".main.variable")
+      } else {
+        return(NULL)
+      }
+    }))
+
+    # get the main predictions
+    f.main.predictions = dplyr::bind_rows(lapply(names(r.variable), function(x) {
+      if(!is.null(r.variable[[x]]$main)) {
+        purrr::map_dfr(r.variable[[x]]$main, "predictions", .id = ".main.variable")
+      } else {
+        return(NULL)
+      }
+    }))
+
+    # get the main effects
+    f.main.contrasts = dplyr::bind_rows(lapply(names(r.variable), function(x) {
+      if(!is.null(r.variable[[x]]$main)) {
+        purrr::map_dfr(r.variable[[x]]$main, "contrasts", .id = ".main.variable")
+      } else {
+        return(NULL)
+      }
+    }))
+
+    # get the interaction coefficients
+    f.interaction.coefficients = dplyr::bind_rows(lapply(names(r.variable), function(x) {
+      if(!is.null(r.variable[[x]]$interaction)) {
+        dplyr::mutate(purrr::map_dfr(r.variable[[x]]$interaction, "coefficients", .id = ".main.interaction"), .main.variable = x, .before = ".main.interaction")
+      } else {
+        return(NULL)
+      }
+    }))
+
+    # get the interaction predictions
+    f.interaction.predictions = dplyr::bind_rows(lapply(names(r.variable), function(x) {
+      if(!is.null(r.variable[[x]]$interaction)) {
+        dplyr::mutate(purrr::map_dfr(r.variable[[x]]$interaction, "predictions", .id = ".main.interaction"), .main.variable = x, .before = ".main.interaction")
+      } else {
+        return(NULL)
+      }
+    }))
+
+    # get the interaction contrasts
+    f.interaction.contrasts = dplyr::bind_rows(lapply(names(r.variable), function(x) {
+      if(!is.null(r.variable[[x]]$interaction)) {
+        dplyr::mutate(purrr::map_dfr(r.variable[[x]]$interaction, "contrasts", .id = ".main.interaction"), .main.variable = x, .before = ".main.interaction")
+      } else {
+        return(NULL)
+      }
+    }))
+
+    # get the mediation
+    f.mediation.contrasts = dplyr::bind_rows(lapply(names(r.variable), function(x) {
+      if(!is.null(r.variable[[x]]$mediation)) {
+        dplyr::mutate(purrr::map_dfr(r.variable[[x]]$mediation, "contrasts", .id = ".main.mediation"), .main.variable = x, .before = ".main.mediation")
+      } else {
+        return(NULL)
+      }
+    }))
+
+    # the full results for an outcome
+    r = list(outcome = dv,
+             main.coefficients = f.main.coefficients, main.predictions = f.main.predictions, main.contrasts = f.main.contrasts,
+             interaction.coefficients = f.interaction.coefficients, interaction.predictions = f.interaction.predictions, interaction.contrasts = f.interaction.contrasts,
+             mediation.contrasts = f.mediation.contrasts)
+
+    # return
+    return(r)
+  })
+
+  # set names
+  if(length(all.outcomes) > 0) {
+    names(all.outcomes) = purrr::map_chr(all.outcomes, "outcome")
+  } else {
+    all.outcomes = NULL
+  }
+
+  # final return
+  return(all.outcomes)
+}

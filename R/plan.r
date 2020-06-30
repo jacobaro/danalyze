@@ -318,7 +318,7 @@ create_variable_table = function(data, treatment, control, interaction, mediatio
               c == "relative" ~ paste0(all.vars$var.label[x], " (Relative", var.lag),
               c == "source.other" ~ paste0(all.vars$var.label[x], " (Other to Source", var.lag),
               c == "target.other" ~ paste0(all.vars$var.label[x], " (Other to Target", var.lag),
-              T ~ paste0(all.vars$var.label[x], var.lag)
+              T ~ paste0(all.vars$var.label[x], if(var.lag == ")") "" else var.lag)
             )
 
           # return the tibble
@@ -528,11 +528,13 @@ create_research_formulas = function(all.vars, all.transform, lag) {
     # create formulas for interactions
     f.int.vars = na.omit(c(all.vars$source[all.vars$type == "interaction"], all.vars$target[all.vars$type == "interaction"], all.vars$relative[all.vars$type == "interaction"]))
     f.int = lapply(f.int.vars, function(i) create_new_formula(iv = c(t, i), controls = t.vars[!t.vars %in% c(t, i)], transforms = all.transform, lag = lag))
+    names(f.int) = f.int.vars
 
     # create formulas for mediating effects -- requires two "med ~ iv" and "outcome ~ iv + med"
     f.med.vars = dplyr::if_else(sapply(all.vars$target[all.vars$type == "mediation"], is.null), all.vars$source[all.vars$type == "mediation"], all.vars$target[all.vars$type == "mediation"])
     f.med = lapply(f.med.vars, function(m) list(mediator = create_new_formula(dv = m, iv = t, controls = t.vars[!t.vars %in% c(t, m)], transforms = all.transform, lag = lag),
                                                 outcome = create_new_formula(iv = c(t, m), type = "+", controls = t.vars[!t.vars %in% c(t, m)], transforms = all.transform, lag = lag)))
+    names(f.med) = f.med.vars
 
     # create full return
     f.full = list(main = f.base, interaction = f.int, mediation = f.med)
