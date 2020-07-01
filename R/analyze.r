@@ -750,7 +750,7 @@ analysis = function(runs, formula, main.ivs = NULL, data, cluster = NULL, weight
 #'
 #' @export
 #'
-analyze_plan = function(research.plan, outcomes, only.run = NULL, run.basic = T, run.mediation = T, run.interaction = T) {
+analyze_plan = function(research.plan, outcomes, .threshold = 0.3, only.run = NULL, run.basic = T, run.mediation = T, run.interaction = T) {
   # first check to make sure research.plan is correctly formatted
   if(!is.list(research.plan) | !rlang::has_name(research.plan, "formulas") | !rlang::has_name(research.plan, "data") | !rlang::has_name(research.plan, "variables")) {
     stop("The research plan does not have the correct fields please check to make sure the variable is correct.")
@@ -771,6 +771,8 @@ analyze_plan = function(research.plan, outcomes, only.run = NULL, run.basic = T,
 
   # console output
   cat(paste0("\n\n** Running research plan with -- ", length(main.variables), " -- variable(s).\n"))
+
+  # loop structure is outcome --> main variable (basic, interaction, mediation)
 
   # loop through outcomes
   all.outcomes = lapply(names(outcomes), function(dv) {
@@ -798,7 +800,7 @@ analyze_plan = function(research.plan, outcomes, only.run = NULL, run.basic = T,
       }
 
       # get the list of variables to drop for our main effect
-      main.drop = danalyze::trim_formula(formula = formula.effects, data = temp.data, cluster = research.plan$cluster, threshold = 0.3)
+      main.drop = danalyze::trim_formula(formula = formula.effects, data = temp.data, cluster = research.plan$cluster, threshold = .threshold)
 
       # run main models if needed
       if(run.basic) {
@@ -844,7 +846,12 @@ analyze_plan = function(research.plan, outcomes, only.run = NULL, run.basic = T,
         interaction.variables = names(research.plan$formulas[[variable]]$interaction)
 
         # loop through interaction variables
-        r.interaction = lapply(interaction.variables[1:2], function(interaction) {
+        r.interaction = lapply(interaction.variables, function(interaction) {
+          # make sure the interaction is not the same as the main variable
+          if(interaction == variable) {
+            return(NULL)
+          }
+
           # console output
           cat(paste0("\n** Running interaction -- ", variable, " X ", interaction, ".\n"))
 
@@ -892,7 +899,12 @@ analyze_plan = function(research.plan, outcomes, only.run = NULL, run.basic = T,
         mediation.variables = names(research.plan$formulas[[variable]]$mediation)
 
         # loop through mediation variables
-        r.mediation = lapply(mediation.variables[1:2], function(mediation) {
+        r.mediation = lapply(mediation.variables, function(mediation) {
+          # make sure the interaction is not the same as the main variable
+          if(mediation == variable) {
+            return(NULL)
+          }
+
           # need to deal with both formulas in turn -- first mediator then outcome
 
           # console output

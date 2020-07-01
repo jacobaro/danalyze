@@ -7,6 +7,7 @@
 analyze_plan(
   research.plan,
   outcomes,
+  .threshold = 0.3,
   only.run = NULL,
   run.basic = T,
   run.mediation = T,
