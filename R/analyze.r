@@ -774,33 +774,33 @@ analyze_plan = function(research.plan, outcomes, .threshold = 0.3, only.run = NU
 
   # loop structure is outcome --> main variable (basic, interaction, mediation)
 
-  # loop through outcomes
-  all.outcomes = lapply(names(outcomes), function(dv) {
+  # loop through variables
+  all.variables = lapply(main.variables, function(variable) {
     # for each outcome, loop through the variables and run the main, interaction, and mediator
-
-    # console output
-    cat(paste0("\n** Working on outcome -- ", dv, ".\n"))
 
     # set data
     temp.data = research.plan$data
 
-    # set outcome
-    temp.data$.outcome = outcomes[[dv]]
+    # console output
+    cat(paste0("\n** Identifying correlates of -- ", variable, ".\n"))
+
+    # add random/fixed effects if needed
+    if(!is.null(research.plan$effects)) {
+      formula.effects = lasso2:::merge.formula(formula_iv_as_dv(research.plan$formulas[[variable]]$main), research.plan$effects)
+    } else {
+      formula.effects = formula_iv_as_dv(research.plan$formulas[[variable]]$main)
+    }
+
+    # get the list of variables to drop for our main effect
+    main.drop = trim_formula(formula = formula.effects, data = temp.data, cluster = research.plan$cluster, threshold = .threshold)
 
     # loop through variables
-    r.variable = lapply(main.variables, function(variable) {
+    r.outcome = lapply(names(outcomes), function(dv) {
       # console output
-      cat(paste0("\n** Identifying correlates of -- ", variable, ".\n"))
+      cat(paste0("\n** Working on outcome -- ", dv, ".\n"))
 
-      # add random/fixed effects if needed
-      if(!is.null(research.plan$effects)) {
-        formula.effects = lasso2:::merge.formula(danalyze::formula_iv_as_dv(research.plan$formulas[[variable]]$main), research.plan$effects)
-      } else {
-        formula.effects = danalyze::formula_iv_as_dv(research.plan$formulas[[variable]]$main)
-      }
-
-      # get the list of variables to drop for our main effect
-      main.drop = danalyze::trim_formula(formula = formula.effects, data = temp.data, cluster = research.plan$cluster, threshold = .threshold)
+      # set outcome
+      temp.data$.outcome = outcomes[[dv]]
 
       # run main models if needed
       if(run.basic) {
@@ -812,7 +812,7 @@ analyze_plan = function(research.plan, outcomes, .threshold = 0.3, only.run = NU
 
         # analyze our formula and data
         analysis = NULL
-        try(analysis <- danalyze::analysis(
+        try(analysis <- analysis(
           runs = 500,
           formula = new.formula,
           main.ivs = variable,
@@ -823,13 +823,13 @@ analyze_plan = function(research.plan, outcomes, .threshold = 0.3, only.run = NU
 
         if(!is.null(analysis)) {
           # create prediction for treatment
-          prediction = danalyze::pr_list(!!variable := danalyze::create_values(temp.data[[variable]]))
+          prediction = pr_list(!!variable := create_values(temp.data[[variable]]))
 
           # set times -- this needs to be fixed so that it is not hard coded
           times = unique(quantile(temp.data$.time.end, seq(1, 9, by = 2) / 10, na.rm = T))
 
           # get results
-          results = danalyze::results(object = analysis, predictions = prediction, draws = 500, times = times)
+          results = results(object = analysis, predictions = prediction, draws = 500, times = times)
 
           # save -- double list so it is easier to use purrr
           r.main = list(list(variable = variable, model = analysis, coefficients = results$coefficients, predictions = results$predictions, contrasts = results$contrasts))
@@ -860,7 +860,7 @@ analyze_plan = function(research.plan, outcomes, .threshold = 0.3, only.run = NU
 
           # analyze our formula and data
           analysis = NULL
-          try(analysis <- danalyze::analysis(
+          try(analysis <- analysis(
             runs = 500,
             formula = new.formula,
             main.ivs = variable,
@@ -872,13 +872,13 @@ analyze_plan = function(research.plan, outcomes, .threshold = 0.3, only.run = NU
           # save if possible
           if(!is.null(analysis)) {
             # create prediction for treatment
-            prediction = danalyze::pr_list(!!variable := danalyze::create_values(temp.data[[variable]]), !!interaction := danalyze::create_values(temp.data[[interaction]]), .constant = interaction)
+            prediction = pr_list(!!variable := create_values(temp.data[[variable]]), !!interaction := create_values(temp.data[[interaction]]), .constant = interaction)
 
             # set times
             times = unique(quantile(temp.data$.time.end, seq(1, 9, by = 2) / 10, na.rm = T))
 
             # get results
-            results = danalyze::results(object = analysis, predictions = prediction, draws = 500, times = times)
+            results = results(object = analysis, predictions = prediction, draws = 500, times = times)
 
             # save
             r = list(variable = variable, interaction = interaction, model = analysis, coefficients = results$coefficients, predictions = results$predictions, contrasts = results$contrasts)
@@ -918,7 +918,7 @@ analyze_plan = function(research.plan, outcomes, .threshold = 0.3, only.run = NU
 
           # first part of mediation
           analysis.med = NULL
-          try(analysis.med <- danalyze::analysis(
+          try(analysis.med <- analysis(
             runs = 500,
             formula = new.formula.med,
             main.ivs = variable,
@@ -929,7 +929,7 @@ analyze_plan = function(research.plan, outcomes, .threshold = 0.3, only.run = NU
 
           # second part of mediation
           analysis.out = NULL
-          try(analysis.out <- danalyze::analysis(
+          try(analysis.out <- analysis(
             runs = 500,
             formula = new.formula.out,
             main.ivs = variable,
@@ -941,13 +941,13 @@ analyze_plan = function(research.plan, outcomes, .threshold = 0.3, only.run = NU
 
           if(!is.null(analysis.med) & !is.null(analysis.out)) {
             # create prediction for treatment
-            prediction = danalyze::pr_list(!!variable := danalyze::create_values(temp.data[[variable]]))
+            prediction = pr_list(!!variable := create_values(temp.data[[variable]]))
 
             # set times -- this needs to be fixed so that it is not hard coded
             times = unique(quantile(temp.data$.time.end, seq(1, 9, by = 2) / 10, na.rm = T))
 
             # get mediation results
-            results = danalyze::results_mediation(m.mediator = analysis.med, m.outcome = analysis.out, predictions = prediction, times = as.integer(median(times)), .outcome = dv)
+            results = results_mediation(m.mediator = analysis.med, m.outcome = analysis.out, predictions = prediction, times = as.integer(median(times)), .outcome = dv)
 
             # save
             r = list(variable = variable, mediation = mediation, model.med = analysis.med, model.out = analysis.out, contrasts = results)
@@ -962,85 +962,103 @@ analyze_plan = function(research.plan, outcomes, .threshold = 0.3, only.run = NU
         r.mediation = NULL
       }
 
+      # remove nulls from results
+      r.main[sapply(r.main, is.null)] = NULL
+      r.interaction[sapply(r.interaction, is.null)] = NULL
+      r.mediation[sapply(r.mediation, is.null)] = NULL
+
       # set the names
-      if(!is.null(r.main)) { names(r.main) = purrr::map_chr(r.main, "variable") }
-      if(!is.null(r.interaction)) { names(r.interaction) = purrr::map_chr(r.interaction, "interaction") }
-      if(!is.null(r.mediation)) { names(r.mediation) = purrr::map_chr(r.mediation, "mediation") }
+      if(!is.null(r.main)) { n = purrr::map_chr(r.main, "variable"); if(!is.null(n)) names(r.main) = n }
+      if(!is.null(r.interaction)) { n = purrr::map_chr(r.interaction, "interaction"); if(!is.null(n)) names(r.interaction) = n }
+      if(!is.null(r.mediation)) { n = purrr::map_chr(r.mediation, "mediation"); if(!is.null(n)) names(r.mediation) = n }
+
+      # data to return
+      r = list(variable = variable, outcome = dv, main = r.main, interaction = r.interaction, mediation = r.mediation)
 
       # return
-      return(list(variable = variable, main = r.main, interaction = r.interaction, mediation = r.mediation))
+      return(r)
     })
 
     # set the names
-    names(r.variable) = purrr::map_chr(r.variable, "variable")
+    if(rlang::has_name(r.outcome, "outcome")) {
+      r.outcome = list(r.outcome)
+    }
+    names(r.outcome) = purrr::map_chr(r.outcome, "outcome")
 
     # add coefficients and predictions
 
     # get the main coefficients
-    f.main.coefficients = dplyr::bind_rows(lapply(names(r.variable), function(x) {
-      if(!is.null(r.variable[[x]]$main)) {
-        purrr::map_dfr(r.variable[[x]]$main, "coefficients", .id = ".main.variable")
+    f.main.coefficients = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
+      if(!is.null(r.outcome[[x]]$main)) {
+        df = purrr::map_dfr(r.outcome[[x]]$main, "coefficients", .id = ".main.variable")
+        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
       } else {
         return(NULL)
       }
     }))
 
     # get the main predictions
-    f.main.predictions = dplyr::bind_rows(lapply(names(r.variable), function(x) {
-      if(!is.null(r.variable[[x]]$main)) {
-        purrr::map_dfr(r.variable[[x]]$main, "predictions", .id = ".main.variable")
+    f.main.predictions = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
+      if(!is.null(r.outcome[[x]]$main)) {
+        df = purrr::map_dfr(r.outcome[[x]]$main, "predictions", .id = ".main.variable")
+        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
       } else {
         return(NULL)
       }
     }))
 
     # get the main effects
-    f.main.contrasts = dplyr::bind_rows(lapply(names(r.variable), function(x) {
-      if(!is.null(r.variable[[x]]$main)) {
-        purrr::map_dfr(r.variable[[x]]$main, "contrasts", .id = ".main.variable")
+    f.main.contrasts = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
+      if(!is.null(r.outcome[[x]]$main)) {
+        df = purrr::map_dfr(r.outcome[[x]]$main, "contrasts", .id = ".main.variable")
+        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
       } else {
         return(NULL)
       }
     }))
 
-    # get the interaction coefficients
-    f.interaction.coefficients = dplyr::bind_rows(lapply(names(r.variable), function(x) {
-      if(!is.null(r.variable[[x]]$interaction)) {
-        dplyr::mutate(purrr::map_dfr(r.variable[[x]]$interaction, "coefficients", .id = ".main.interaction"), .main.variable = x, .before = ".main.interaction")
+    # get the interaction coefficients -- the main variable is not named correctly -- fix!!!
+    f.interaction.coefficients = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
+      if(!is.null(r.outcome[[x]]$interaction)) {
+        df = dplyr::mutate(purrr::map_dfr(r.outcome[[x]]$interaction, "coefficients", .id = ".main.interaction"), .main.variable = x, .before = ".main.interaction")
+        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
       } else {
         return(NULL)
       }
     }))
 
     # get the interaction predictions
-    f.interaction.predictions = dplyr::bind_rows(lapply(names(r.variable), function(x) {
-      if(!is.null(r.variable[[x]]$interaction)) {
-        dplyr::mutate(purrr::map_dfr(r.variable[[x]]$interaction, "predictions", .id = ".main.interaction"), .main.variable = x, .before = ".main.interaction")
+    f.interaction.predictions = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
+      if(!is.null(r.outcome[[x]]$interaction)) {
+        df = dplyr::mutate(purrr::map_dfr(r.outcome[[x]]$interaction, "predictions", .id = ".main.interaction"), .main.variable = x, .before = ".main.interaction")
+        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
       } else {
         return(NULL)
       }
     }))
 
     # get the interaction contrasts
-    f.interaction.contrasts = dplyr::bind_rows(lapply(names(r.variable), function(x) {
-      if(!is.null(r.variable[[x]]$interaction)) {
-        dplyr::mutate(purrr::map_dfr(r.variable[[x]]$interaction, "contrasts", .id = ".main.interaction"), .main.variable = x, .before = ".main.interaction")
+    f.interaction.contrasts = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
+      if(!is.null(r.outcome[[x]]$interaction)) {
+        df = dplyr::mutate(purrr::map_dfr(r.outcome[[x]]$interaction, "contrasts", .id = ".main.interaction"), .main.variable = x, .before = ".main.interaction")
+        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
       } else {
         return(NULL)
       }
     }))
 
     # get the mediation
-    f.mediation.contrasts = dplyr::bind_rows(lapply(names(r.variable), function(x) {
-      if(!is.null(r.variable[[x]]$mediation)) {
-        dplyr::mutate(purrr::map_dfr(r.variable[[x]]$mediation, "contrasts", .id = ".main.mediation"), .main.variable = x, .before = ".main.mediation")
+    f.mediation.contrasts = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
+      if(!is.null(r.outcome[[x]]$mediation)) {
+        df = dplyr::mutate(purrr::map_dfr(r.outcome[[x]]$mediation, "contrasts", .id = ".main.mediation"), .main.variable = x, .before = ".main.mediation")
+        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
       } else {
         return(NULL)
       }
     }))
 
     # the full results for an outcome
-    r = list(outcome = dv,
+    r = list(variable = variable,
              main.coefficients = f.main.coefficients, main.predictions = f.main.predictions, main.contrasts = f.main.contrasts,
              interaction.coefficients = f.interaction.coefficients, interaction.predictions = f.interaction.predictions, interaction.contrasts = f.interaction.contrasts,
              mediation.contrasts = f.mediation.contrasts)
@@ -1050,12 +1068,15 @@ analyze_plan = function(research.plan, outcomes, .threshold = 0.3, only.run = NU
   })
 
   # set names
-  if(length(all.outcomes) > 0) {
-    names(all.outcomes) = purrr::map_chr(all.outcomes, "outcome")
+  if(length(all.variables) > 0) {
+    if(rlang::has_name(all.variables, "variable")) {
+      all.variables = list(all.variables)
+    }
+    names(all.variables) = purrr::map_chr(all.variables, "variable")
   } else {
-    all.outcomes = NULL
+    all.variables = NULL
   }
 
   # final return
-  return(all.outcomes)
+  return(all.variables)
 }

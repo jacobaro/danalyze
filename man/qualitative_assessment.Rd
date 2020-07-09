@@ -4,13 +4,7 @@
 \alias{qualitative_assessment}
 \title{Provide a qualitative assessment for a set of results (main, interaction, and mediation effects)}
 \usage{
-qualitative_assessment(
-  research.plan,
-  outcome.name,
-  main.res,
-  interaction.res,
-  mediation.res
-)
+qualitative_assessment(research.plan, all.results)
 }
 \description{
 Provide a qualitative assessment for a set of results (main, interaction, and mediation effects)
