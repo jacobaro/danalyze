@@ -862,6 +862,25 @@ results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, .
   return(r)
 }
 
+# parse effects -- not robust to factors/characters with " vs." or ", "
+
+#' Helper function to parse the 'contrasts' string in a result.
+#'
+#' @export
+#'
+parse_contrast = function(df) {
+  r = tibble::as_tibble(t(sapply(df$.contrast, function(str) {
+    r = unlist(stringr::str_split(str, " vs. "))
+    if(stringr::str_detect(str, ", ")) {
+      r = unlist(stringr::str_split(r, ", "))
+      c(v1.high = r[1], v1.low = r[3], v2.high = r[2], v2.low = r[4])
+    } else {
+      c(v1.high = r[1], v1.low = r[2])
+    }
+  })))
+  r
+}
+
 #' Provide a qualitative assessment for a set of results (main, interaction, and mediation effects)
 #'
 #' @export
@@ -872,326 +891,226 @@ qualitative_assessment = function(research.plan, all.results) {
   interaction.res = purrr::map_dfr(all.results, "interaction.contrasts", .id = ".main.variable")
   mediation.res = purrr::map_dfr(all.results, "mediation.contrasts", .id = ".main.variable")
 
+  # duplicates in mediation.res because our plan had duplicates -- should get the plan to check duplicates
+  mediation.res = mediation.res[!duplicated(dplyr::select(mediation.res, .main.variable, .main.mediation, .outcome, .effect)), ]
+
   # how many significant values would you need to look through
   # table(c(main.res$p.value, interaction.res$p.value, mediation.res$p.value) < 0.1)
 
-  # ## NEED TO ADD IN BOTH INTERACTION NAMES AND MEDIATION NAMES!!!!
-  # interaction.res$.main.variable = unlist(dplyr::group_map(dplyr::group_by(tibble::rowid_to_column(interaction.res, ".row.id"), .row.id), ~ {
-  #   t.m = .x[, colnames(.x)[stringr::str_detect(colnames(.x), ".id1.")]]
-  #   t.names = paste0(".id1.", plan$variables$label$var.name[plan$variables$label$type %in% c("treatment", "alternative")])
-  #   t.str = stringr::str_replace(colnames(t.m)[!is.na(t.m) & colnames(t.m) %in% t.names], ".id1.", "")
-  #   t.str = t.str[t.str != unique(.x$.main.interaction)]
-  #   dplyr::first(t.str)
-  # }))
-
-  # first think about time
-  time.categories = unique(na.omit(c(main.res$.time, interaction.res$.time)))
-
-  # set time
-  if(!is.null(time.categories)) {
-    time.categories =
-      list("initially" = time.categories[time.categories < quantile(time.categories, 0.33, na.rm = T)],
-           "over the midterm" = time.categories[time.categories >= quantile(time.categories, 0.33, na.rm = T) & time.categories <= quantile(time.categories, 0.66, na.rm = T)],
-           "over the longrun" = time.categories[time.categories > quantile(time.categories, 0.66, na.rm = T)])
-  } else {
-    time.categories = list("all" = NULL)
-  }
-
-  # assess effect function
-  assess_effect = function(result, time.categories) {
-    # get significance
-    r = lapply(names(time.categories), function(t) {
-      # get index
-      if(is.null(time.categories[[t]])) {
-        i = 1:nrow(result)
-      } else {
-        i = result$.time %in% time.categories[[t]]
-      }
-
-      # return significance
-      r = tibble::tibble(
-        time = t,
-        stat = dplyr::case_when(any(result$p.value[i] < 0.01) ~ "significant", any(result$p.value[i] < 0.05) ~ "significant",
-                                any(result$p.value[i] < 0.1) ~ "possible", any(result$p.value[i] < 0.25) ~ "insignificant", T ~ "insignificant"),
-        sign = dplyr::if_else(any(result$c[i] < 0), "negative", "positive"),
-        size = mean(result$c[i])
-      )
-
-      # return
-      return(r)
-    })
-
-    # bind
-    r = dplyr::bind_rows(r)
-
-    # add in grouping variables
-    if(length(dplyr::group_vars(result)) > 0) {
-      r = dplyr::bind_cols(dplyr::distinct(dplyr::select(result, dplyr::group_vars(result))), r)
-    }
-
-    # return
-    return(r)
-  }
-
-  # assess main effects
-  if(!is.null(main.res)) {
-    # group
-    main.res = dplyr::group_by(main.res, .outcome, .main.variable, .contrast)
-
-    # run through variables
-    main.effect = dplyr::group_map(main.res, ~ {
-      r = assess_effect(result = .x, time.categories = time.categories)
-      r = dplyr::bind_cols(dplyr::distinct(dplyr::select(.x, dplyr::group_vars(main.res))), r)
-      return(r)
-    }, .keep = T)
-
-    # bind
-    main.effect = dplyr::bind_rows(main.effect)
-
-    # replace names
-    main.effect$.main.label = research.plan$variables$label$var.label[match(main.effect$.main.variable, research.plan$variables$label$var.name)]
-  } else {
-    main.effect = NULL
-  }
-
-  # assess interaction effects
-  if(!is.null(interaction.res)) {
-    # group
-    interaction.res = dplyr::group_by(interaction.res, .outcome, .main.variable, .main.interaction, .contrast)
-
-    # map
-    interaction.effect = dplyr::group_map(interaction.res, ~ {
-      r = assess_effect(result = .x, time.categories = time.categories)
-      r = dplyr::bind_cols(dplyr::distinct(dplyr::select(.x, dplyr::group_vars(interaction.res))), r)
-      return(r)
-    }, .keep = T)
-
-    # bind
-    interaction.effect = dplyr::bind_rows(interaction.effect)
-
-    # replace names
-    interaction.effect$.main.label = research.plan$variables$label$var.label[match(interaction.effect$.main.variable, research.plan$variables$label$var.name)]
-    interaction.effect$.interaction.label = research.plan$variables$label$var.label[match(interaction.effect$.main.interaction, research.plan$variables$label$var.name)]
-  } else {
-    interaction.effect = NULL
-  }
-
-  # assess mediation effects
-  if(!is.null(mediation.res)) {
-    # map
-    mediation.effect = dplyr::group_map(dplyr::rowwise(mediation.res), ~ {
-      r = assess_effect(result = .x, time.categories = list("all" = NULL))
-      r = dplyr::bind_cols(.x, r)
-      return(r)
-    }, .keep = T)
-
-    # bind
-    mediation.effect = dplyr::bind_rows(mediation.effect)
-
-    # replace names
-    mediation.effect$.main.label = research.plan$variables$label$var.label[match(mediation.effect$.main.variable, research.plan$variables$label$var.name)]
-    mediation.effect$.mediation.label = research.plan$variables$label$var.label[match(mediation.effect$.main.mediation, research.plan$variables$label$var.name)]
-  } else {
-    mediation.effect = NULL
-  }
-
   # function to easily paste a list -- add below to variable_effect
-  paste_list = function(items, wrap = NULL) {
+  paste_list = function(items, wrap = NULL, .join = "and") {
     # wrap if needed
     if(is.character(wrap)) {
       items = paste0(wrap, items, wrap)
     }
 
+    # drop NA
+    items = unique(items[!is.na(items)])
+
+    # return if empty
+    if(length(items) < 1) {
+      return("")
+    }
+
     # commas or commas and
     if(length(items) < 3) {
-      str = paste(items, collapse = " and ")
+      str = paste(items, collapse = paste0(" ", .join, " "))
     } else {
-      str = paste(paste(items[-length(items)], collapse = ", "), items[length(items)], sep = ", and ")
+      str = paste(paste(items[-length(items)], collapse = ", "), items[length(items)], sep = paste0(", ", .join, " "))
     }
 
     # return
     return(str)
   }
 
-  # variable effect -- needs: .main.variable, .main.label, .outcome, sign, stat
-  variable_effect = function(result, effect.size = NULL, drop.insig = F, just.effect = F, .extra = NULL) {
-    # identify time effect
-    str = dplyr::group_map(result, ~ {
-      # filter
-      if(drop.insig) {
-        .x.t = dplyr::filter(.x, stat != "insignificant")
-      } else {
-        .x.t = .x
-      }
-
-      # make sure we have values
-      if(nrow(.x.t) < 1) {
-        return(NULL)
-      }
-
-      # set main variable
-      main.variable.t = unique(.x.t$.main.variable)
-
-      # set size description
-      .x.t$size.description = mapply(function(s, o, t) {
-        base.size = effect.size$size[effect.size$.main.variable == main.variable.t & effect.size$.outcome == o & effect.size$stat != "insignificant" & effect.size$time == t]
-        if(length(base.size) < 1) {
-          return("average")
-        } else {
-          bs = abs(s) / (abs(s) + max(abs(base.size)))
-          return(dplyr::case_when(bs > 0.8 ~ "huge", bs > 0.66 ~ "very large", bs > 0.55 ~ "large", bs < 0.45 ~ "small", bs < 0.33 ~ "very small", bs < 0.2 ~ "tiny",T ~ "average"))
-        }
-      }, s = .x.t$size, o = .x.t$.outcome, t = .x.t$time)
-
-      # first collapse time
-      .x.t = dplyr::summarize(
-        dplyr::group_by(.x.t, .outcome, .main.label, stat, sign),
-        time = dplyr::if_else(any(time == "all") | dplyr::n_distinct(time) == 3, "", paste_list(time)),
-        size.description = first(size.description),
-        .groups = "keep")
-
-      # now collapse outcome
-      .x.t = dplyr::summarize(dplyr::group_by(.x.t, .main.label, stat, sign, time, size.description), .outcome = paste_list(.outcome, wrap = "'"), .outcome.length = n(), .groups = "keep")
-
-      # set string
-      str = paste0(
-        dplyr::if_else(grepl("^(a|e|i|o|u)", .x.t$size.description), "an ", "a "), .x.t$size.description, " ", .x.t$sign, " ", .x.t$stat,
-        " effect on outcome", dplyr::if_else(.x.t$.outcome.length > 1, "s", ""), " ", .x.t$.outcome, dplyr::if_else(.x.t$time == "", "", " "), .x.t$time
-      )
-
-      # if we just want the effect part then return
-      if(just.effect) {
-        return(str)
-      }
-
-      # add variable name
-      str = paste0("Variable '", unique(.x.t$.main.label), "' has ", paste_list(str), .extra, ".")
-
-      # return string
-      return(str)
-    }, .keep = T)
-
-    # unlist
-    str = unlist(str)
-
-    # return
-    return(str)
-  }
-
-  # identify the variables with the largest impact
-  effect.size.sum = dplyr::filter(dplyr::mutate(dplyr::group_by(main.effect, .outcome, sign),
-                                                .largest = abs(size) == max(abs(size[if(any(stat != "insignificant")) stat != "insignificant" else T])), na.rm = T),
-                                  .largest == T)
-
-  # group by variable and sum
-  effect.size.sum = dplyr::summarize(
-    dplyr::group_by(effect.size.sum, .main.variable, .main.label, sign),
-    .outcome = paste_list(.outcome, wrap = "'"),
-    .outcome.length = n(),
-    insignificant = all(stat == "insignificant"),
-    .groups = "keep"
-  )
-
-  # create the string listing the highest value
-  str.highest = dplyr::group_map(dplyr::group_by(effect.size.sum, .main.variable), ~ {
-    # create str
-    str = paste0("Variable '", unique(.x$.main.label), "' has the largest ",
-                 paste_list(paste0(.x$sign, " effect on outcome", dplyr::if_else(.x$.outcome.length > 1, "s ", " "), .x$.outcome)), if(any(.x$insignificant)) " but this effect is insignificant" else "", ".")
-  })
-
-  # go through variables
-  str.effect = lapply(unique(main.res$.main.variable), function(variable) {
-    # subset main data
-    main.effect.temp = dplyr::filter(main.effect, .main.variable == variable)
-
-    # run if we have data
-    if(nrow(main.effect.temp) > 0) {
-      # build main effect string
-      str.main = paste(variable_effect(result = main.effect.temp, effect.size = main.effect, drop.insig = T), collapse = " ")
-
-      # make null if blank
-      if(str.main == "") str.main = NULL
-    } else {
-      str.main = NULL
+  # provide qualitative indicators of the direction, significance, and size of an effect
+  qualitative_effect = function(df) {
+    # make sure it has the right columns
+    if(!all(c("c", "c.low", "c.high", "p.value", ".compare") %in% colnames(df))) {
+      stop("Dataframe does not have correcte columns.")
     }
 
-    # build interaction effect string
-    interaction.effect.temp = dplyr::filter(interaction.effect, .main.variable == variable)
+    # add blank time if missing
+    if(!rlang::has_name(df, ".time")) df$.time = NA
 
-    # run if we have data
-    if(nrow(interaction.effect.temp) > 0) {
-      # run through and get interaction effect
-      str.int = lapply(unique(interaction.effect.temp$.main.interaction), function(interaction) {
-        # main variable label
-        int.var.label = unique(plan$variables$label$var.label[plan$variables$label$var.name == interaction])
+    # set additional variable name
+    .additional = if(rlang::has_name(df, ".main.interaction")) ".main.interaction" else ".main.mediation"
 
-        # filter to relevant
-        temp.data = dplyr::filter(interaction.effect.temp, .main.variable == variable, .main.interaction == interaction)
+    # create the return
+    r = tibble::tibble(
+      # add labels
+      .main.label = plan$variables$label$var.label[match(df$.main.variable, plan$variables$label$var.name)],
+      .additional.label = plan$variables$label$var.label[match(df[[.additional]], plan$variables$label$var.name)],
 
-        # first is low contrast and second is high
-        str.int.low =
-          variable_effect(result = dplyr::filter(temp.data, .contrast == unique(temp.data$.contrast)[1]), drop.insig = T, effect.size = main.effect, .extra = paste0(" when '", int.var.label, "' is 'low'"))
-        str.int.high =
-          variable_effect(result = dplyr::filter(temp.data, .contrast == unique(temp.data$.contrast)[2]), drop.insig = T, effect.size = main.effect, .extra = paste0(" when '", int.var.label, "' is 'high'"))
+      # set time
+      time = factor(dplyr::case_when(
+        is.na(df$.time) ~ "",
+        df$.time < quantile(df$.time, 0.33, na.rm = T) ~ "short",
+        df$.time < quantile(df$.time, 0.66, na.rm = T) ~ "medium",
+        df$.time >= quantile(df$.time, 0.66, na.rm = T) ~ "long"
+      ), levels = c("short", "medium", "long")),
 
-        # return var
-        return(c(str.int.low, str.int.high))
-      })
-    } else {
-      str.int = NULL
-    }
+      # how significant the effect is
+      significance = dplyr::case_when(
+        df$p.value < 0.01 ~ "very significant",
+        df$p.value < 0.05 ~ "significant",
+        df$p.value < 0.1 ~ "possible",
+        T ~ "insignificant"
+      ),
 
-    # build mediation effect string
-    mediation.effect.temp = dplyr::filter(mediation.effect, .main.variable == variable)
+      # the direction of the effect
+      direction = dplyr::case_when(
+        df$c < 0 ~ "negative",
+        T ~ "positive"
+      ),
 
-    # if we have
-    if(nrow(mediation.effect.temp) > 0) {
-      # summarize by mediator/outcome
-      mediation.effect.temp = dplyr::summarize(
-        dplyr::group_by(mediation.effect.temp, .main.variable, .main.label, .main.mediation, .mediation.label, .outcome),
-        treat.stat = stat[.effect == "treat.on.mediator"], treat.sign = sign[.effect == "treat.on.mediator"], treat.size = size[.effect == "treat.on.mediator"],
-        indirect.stat = stat[.effect == "indirect.effect"], indirect.sign = sign[.effect == "indirect.effect"], indirect.size = size[.effect == "indirect.effect"],
-        .groups = "keep"
-      )
+      # size of effect relative to comparison -- if compare is of zero size just default to the highest value
+      percent = dplyr::if_else(df$.compare == 0, 999, abs(df$c) / abs(df$.compare)),
 
-      # collapse significance
-      mediation.effect.temp$treat.stat = dplyr::if_else(mediation.effect.temp$treat.stat %in% c("possible", "insignificant"), "insignificant", "significant")
-      mediation.effect.temp$indirect.stat = dplyr::if_else(mediation.effect.temp$indirect.stat %in% c("possible", "insignificant"), "insignificant", "significant")
+      # formatted
+      percent.label = dplyr::case_when(
+        percent > 10 ~ "(>1,000%)",
+        percent < 0.1 ~ "(<10%)",
+        T ~ paste0("(", scales::percent(percent, big.mark = ",", accuracy = 1), ")")
+      ),
 
-      # create the string
-      str.med = dplyr::group_map(dplyr::group_by(mediation.effect.temp, .main.variable, treat.sign, indirect.sign), ~ {
-        paste0(if(grepl("^(a|e|i|o|u)", unique(.x$treat.sign))) "an " else "a ", unique(.x$treat.sign), " effect on ", paste_list(unique(.x$.mediation.label), wrap = "'"), ", which has a ", unique(.x$indirect.sign),
-               " effect on outcome", if(dplyr::n_distinct(.x$.outcome) > 1) "s " else "", paste_list(unique(.x$.outcome), wrap = "'"))
-      }, .keep = T)
+      # turn the percentage into a
+      size = factor(dplyr::case_when(
+        # percent > 3 ~ "huge",
+        percent > 2.5 ~ "very large",
+        percent > 1.5 ~ "large",
+        percent < 1/1.5 ~ "small",
+        percent < 1/2.5 ~ "very small",
+        # percent < 1/3 ~ "tiny",
+        T ~ "average"
+      ), levels = c("very small", "small", "average", "large", "very large")),
 
-      # combine together
-      str.med = paste0("Variable '", unique(mediation.effect.temp$.main.label), "' has ", paste_list(str.med), ".")
-    } else {
-      str.med = NULL
-    }
+      # formatted
+      size.label = paste(size, percent.label)
+    )
 
-    # return string list
-    r = list(variable = unique(main.effect.temp$.main.label), main = unlist(str.main), interaction = unlist(str.int), mediation = unlist(str.med))
 
     # return
     return(r)
-  })
+  }
 
-  # set names
-  names(str.effect) = purrr::map_chr(str.effect, "variable")
+  # combine and select
+  all.effects = dplyr::bind_rows(
+    dplyr::bind_cols(dplyr::select(dplyr::ungroup(interaction.res), .outcome, .time, .main.variable, .main.interaction, c, c.low, c.high, p.value), parse_contrast(interaction.res)),
+    dplyr::bind_cols(dplyr::select(dplyr::ungroup(main.res), .outcome, .time, .main.variable, c, c.low, c.high, p.value), parse_contrast(main.res))
+  )
 
-  # collapse highest
-  str.highest.full = paste(str.highest, collapse = " ")
+  # set mediation too
+  med.effects = mediation.res
 
-  # collapse effects
-  str.effect.full = lapply(str.effect, function(.x) {
-    # assemble string
-    r.str = paste0("\n\nWe now assess the effect of '", .x$variable, "'. ", if(!is.null(.x$main)) paste(.x$main, collapse = " ") else "No main effects found.",
-                   "\n\nNext we assess the conditions under which '", .x$variable, "' has an effect. ", if(!is.null(.x$interaction)) paste(.x$interaction, collapse = " ") else "No interaction effects found.",
-                   "\n\nFinally we identify how '", .x$variable, "' works. ", if(!is.null(.x$mediation)) paste(.x$mediation, collapse = " ") else "No mediation effects found.")
-  })
+  # add compare
+  all.effects = dplyr::mutate(dplyr::group_by(all.effects, .outcome, .time), .compare = mean(abs(c[p.value < 0.1])))
+  med.effects = dplyr::mutate(dplyr::group_by(med.effects, .outcome), .compare = mean(abs(c[.effect == "total.effect"])))
 
-  # return
-  return(str.effect.full)
+  # identify low and high values
+  all.effects = dplyr::mutate(dplyr::group_by(all.effects, .outcome, .time, .main.variable, .main.interaction),
+                              v1.size = dplyr::case_when(v1.high != v1.low ~ "both", v1.high == max(v1.high) ~ "high", T ~ "low"),
+                              v2.size = dplyr::case_when(is.na(v2.high) ~ NA_character_, v2.high != v2.low ~ "both", v2.high == max(v2.high) ~ "high", T ~ "low"))
+
+  # describe effects
+  all.effects = dplyr::bind_cols(all.effects, qualitative_effect(all.effects))
+  med.effects = dplyr::bind_cols(med.effects, qualitative_effect(med.effects))
+
+  # first filter out insignificant results
+  all.signif = dplyr::filter(all.effects, significance != "insignificant")
+  med.signif = dplyr::select(dplyr::filter(
+    dplyr::mutate(dplyr::group_by(med.effects, .outcome, .main.variable, .main.mediation),
+                  med.direction = if(any(c[.effect == "treat.on.mediator"] * c[.effect == "indirect.effect"] >= 0)) "positive" else "negative",
+                  .to.keep = any(significance[.effect %in% c("indirect.effect", "treat.on.mediator")] != "insignificant")),
+    .to.keep == T), -.to.keep)
+
+
+  # summarize to get unique effects
+  all.signif = dplyr::summarize(
+    dplyr::group_by(all.signif, .outcome, .main.variable, .main.label, .main.interaction, .additional.label, v2.size, significance, direction, size),
+    time = paste_list(time),
+    label = size.label[as.integer(dplyr::n() / 2)],
+    .groups = "keep"
+  )
+
+  # two ways to summarize -- by variable and by outcome
+
+  # summarize by outcome
+  all.signif.outcome = dplyr::group_map(dplyr::group_by(all.signif, .outcome, direction), ~ {
+    # determine if there are multiple variables
+    .plural = if(dplyr::n_distinct(.x$.main.label) > 1) T else F
+
+    # start string
+    str = paste0("The outcome '", unique(.x$.outcome), "' is ", if(unique(.x$direction) == "positive") "increased" else "decreased", " by ",
+                 if(.plural) "several variables." else "one variable.")
+
+    ## ADD IN SIZE OF EFFECT, TIMING OF EFFECT, COMPARISON OF EFFECT SIZE, AND ABILITY TO PULL OUT AN EFFECT FOR A SPECIFIC CASE
+
+    # create variable strings
+    var.string = dplyr::group_map(dplyr::group_by(.x, .main.variable), ~ {
+      # set unconditional
+      .unconditional = if(any(is.na(.x$.main.interaction))) T else F
+
+      # # and if we have a vowel before size
+      # .vowel = if(grepl("^(a|e|i|o|u)", unique(.x$size))) T else F
+
+      # create string
+      str = paste0("Variable '", unique(.x$.main.label), "' has a ", unique(.x$direction), " ", if(.unconditional) "unconditional ",
+            "effect on '", unique(.x$.outcome), "'")
+
+      # set when (interaction)
+      if(any(!is.na(.x$.main.interaction))) {
+        when.str = dplyr::group_map(dplyr::group_by(dplyr::filter(.x, !is.na(.main.interaction)), v2.size), ~ {
+          # determine if there are multiple variables
+          .plural = if(dplyr::n_distinct(.x$.main.interaction) > 1) T else F
+
+          # string
+          paste0(paste_list(.x$.additional.label, wrap = "'", .join = "or"), if(.plural) " are '" else " is '", unique(.x$v2.size), "'")
+        }, .keep = T)
+
+        # combine
+        when.str = paste0(if(.unconditional) paste0(" and a '", unique(.x$direction), "' conditional effect"), " when ", paste_list(when.str, .join = "and/or"))
+      } else {
+        when.str = ""
+      }
+
+      # now deal with mediation when it is present
+
+      # pull mediation data -- only for a certain direction so also filter that
+      .x.med = dplyr::filter(med.signif, .main.variable == unique(.x$.main.variable), .outcome == unique(.x$.outcome), med.direction == unique(.x$direction))
+      .x.med = dplyr::mutate(dplyr::group_by(.x.med, .main.mediation),
+                             .treat.direction = dplyr::if_else(c[.effect == "treat.on.mediator"] >= 0, "increasing", "decreasing"))
+
+      # describe mediation effect if present
+      if(nrow(.x.med) > 0) {
+        # get the individual effects
+        med.dir.effect = dplyr::group_map(dplyr::group_by(.x.med, .treat.direction), ~ {
+          paste0(unique(.x.med$.treat.direction), " ", paste_list(.x.med$.additional.label, wrap = "'"))
+        })
+
+        med.str = paste0(". Variable '", unique(.x$.main.label), "' also has a mediating impact by ", paste_list(med.dir.effect))
+      } else {
+        med.str = ""
+      }
+
+      # combine
+      str = paste0(str, when.str, med.str, ".")
+
+      # return
+      return(str)
+    }, .keep = T)
+
+    # combine
+    str = c(unlist(str), unlist(var.string))
+
+    # return
+    return(str)
+  }, .keep = T)
+
+  # set the names
+  names(all.signif.outcome) = apply(unique(dplyr::select(dplyr::ungroup(all.signif), .outcome, direction)), 1, paste, collapse = ", ")
+
+  # return -- has main effects, interaction effects, and mediation effects sorted by outcome
+  return(all.signif.outcome)
 }
 
