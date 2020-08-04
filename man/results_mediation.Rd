@@ -9,6 +9,7 @@ results_mediation(
   m.outcome,
   predictions,
   times = NULL,
+  draws = 1000,
   .outcome = NULL
 )
 }

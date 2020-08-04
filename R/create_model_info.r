@@ -165,7 +165,7 @@ determine_model = function(formula.parsed, data) {
     # check types
     if(is.factor(data.response)) {
       # we have a binomial, categorical, or ordered model
-      if(n_distinct(data.response) > 2) {
+      if(dplyr::n_distinct(data.response) > 2) {
         if(is.ordered(data.response)) {
           model.type = model.type.list$ordered
         } else {
@@ -246,8 +246,8 @@ identify_tve = function(formula, data, var = NULL, random.effects = F) {
   }
 
   # identify relevant variables
-  t.mat = withr::with_package("survival", model.matrix(formula, data))
-  var.name = colnames(t.mat)[which(attr(t.mat, "assign") %in% which(all.vars(delete.response(terms(formula))) %in% var))]
+  t.mat = withr::with_package("survival", model.frame(formula, data))
+  var.name = colnames(t.mat)[colnames(t.mat) %in% var]
 
   # check time varying
   zph.surv = NULL
@@ -268,7 +268,7 @@ identify_tve = function(formula, data, var = NULL, random.effects = F) {
   num.in.zph = which(rownames(zph.surv$table) %in% var.name)
 
   # create a tibble with the vars and the p-values
-  var.tdh = tibble::tibble(var = var, var.formula = var.name, p.value = zph.surv$table[num.in.zph, 3])
+  var.tdh = tibble::tibble(var = var.name, var.formula = var.name, p.value = zph.surv$table[num.in.zph, 3])
 
   # return
   return(var.tdh)
@@ -348,6 +348,7 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
       model.extra$class = c("frequentist", "negbin",  "glm")
     } else {
       # baysian neg binomial family
+      model.extra$model.args$family = rstanarm::neg_binomial_2(link = "log")
       model.extra$family = rstanarm::neg_binomial_2(link = "log")
     }
   }
@@ -435,7 +436,7 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
       # model changes -- hassle to use both lmer and glmer since they accept different arguments
       model.extra$model.run = lme4::lmer
       model.extra$model.args$family = NULL
-      model.extra$famil = stats::gaussian(link = "identity")
+      model.extra$family = stats::gaussian(link = "identity")
       model.extra$model.args = c(model.extra$model.args, list(control = lme4::lmerControl(calc.derivs = F, optimizer = "nloptwrap")))
     } else if(model.type == model.type.list$binary) {
       # model changes
@@ -485,6 +486,13 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
     model.extra$model.args$iter = 500
     model.extra$model.args$seed = 24021985
 
+    # additional for neg binomial
+    if(model.type == model.type.list$binary) {
+      # baysian neg binomial family
+      model.extra$model.args$family = binomial(link = "logit")
+      model.extra$family = binomial(link = "logit")
+    }
+
     # additions/changes for ordered regression
     if(model.type == model.type.list$ordered) {
       model.extra$model.run = rstanarm::stan_polr
@@ -497,6 +505,13 @@ produce_model_function = function(model.type, formula.parsed, inference, model.e
       model.extra$model.run = rstanarm::stan_surv
       model.extra$model.args$prior_aux = NULL
       model.extra$model.args$basehaz = "ms"
+    }
+
+    # additional for neg binomial
+    if(model.type == model.type.list$neg.binomial) {
+      # baysian neg binomial family
+      model.extra$model.args$family = rstanarm::neg_binomial_2(link = "log")
+      model.extra$family = rstanarm::neg_binomial_2(link = "log")
     }
 
     ## need to add in brms zero inflated

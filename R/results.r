@@ -58,6 +58,95 @@ get_summary_statistics = function(formula.list, data, labels = NULL) {
   return(d.mm)
 }
 
+# function to get predictions for assessing variable effects
+
+#' Create predictions for all variables in a formula.
+#'
+#' @export
+#'
+get_variable_effects = function(variables, data, labels = NULL, .variable.set = NULL, .perc = c(0.1, 0.9)) {
+  # can accept either a formula or a vector
+  if(rlang::is_formula(variables)) {
+    # process formula
+    f = all.vars(delete.response(terms(lme4:::nobars(variables))))
+  } else {
+    f = as.character(variables)
+  }
+
+  # select frame -- if the character vector is named it automatically renames too -- pretty cool
+  d.f = dplyr::select(dplyr::ungroup(data), tidyselect::any_of(f))
+
+  # reoder
+  if(!is.null(labels)) {
+    # select present
+    labels.present = labels[labels %in% colnames(d.f)]
+  } else {
+    labels.present = colnames(d.f)
+    names(labels.present) = colnames(d.f)
+  }
+
+  # shrink to the variables we want to examine
+  if(!is.null(.variable.set)) {
+    labels.present = labels.present[stringr::str_detect(labels.present, .variable.set)]
+  }
+
+  # create predictions
+  r = lapply(1:length(labels.present), function(x) {
+    # make sure we dont double name
+    x = labels.present[x]
+
+    # get values
+    if(is.factor(d.f[[x]]) | is.character(d.f[[x]])) {
+      # we have a factor
+
+      # get levels
+      if(is.factor(d.f[[x]])) {
+        levels = rev(levels(d.f[[x]]))
+      } else {
+        levels = unique(na.omit(d.f[[x]]))
+      }
+
+      # cant seem to get rlang to work here so just do it the hard way
+      args = list(x = levels)
+      names(args) = x
+
+      # return
+      r = do.call(pr_list, args = args)
+    } else {
+      # we have a number
+
+      # get low and high
+      l = quantile(d.f[[x]], .perc[1], na.rm = T)
+      h = quantile(d.f[[x]], .perc[2], na.rm = T)
+
+      # are they the same? if so then just get low and high
+      if(l == h) {
+        l = min(d.f[[x]])
+        h = max(d.f[[x]])
+      }
+
+      # cant seem to get rlang to work here so just do it the hard way
+      args = list(x = c(round(h, 3), round(l, 3)))
+      names(args) = x
+
+      # return
+      r = do.call(pr_list, args = args)
+    }
+
+    # set names since many high and low values can be the same across variables
+    names(r) = paste0(names(labels.present)[labels.present == x], ": ", names(r))
+
+    # and send it back
+    return(r)
+  })
+
+  # combine
+  r = c(unlist(r, recursive = F))
+
+  # return
+  return(r)
+}
+
 
 # summarize interval -- could use HDI -- should be equivalent to http://mc-stan.org/rstanarm/reference/posterior_interval.stanreg.html
 
@@ -94,11 +183,12 @@ summarize_interval = function(data, .ci = 0.95, .grouping = c(".prediction.id", 
   r = dplyr::summarize(
     r,
     q = NA, #list(hdi(prob, .ci)),
-    c = median(prob),
+    c = mean(prob),
     c.low = quantile(prob, (1 - .ci) / 2), # q[[1]][1], # quantile(prob, (1 - .ci) / 2),
     c.high = quantile(prob, 1 - ((1 - .ci) / 2)), # q[[1]][2], # quantile(prob, 1 - ((1 - .ci) / 2)),
     p.value = min(dplyr::if_else(c < 0, 1 - ecdf(prob)(0), ecdf(prob)(0)) * 2, 1),
-    draws = length(prob)
+    draws = length(prob),
+    .groups = "keep"
   )
 
   # drop q
@@ -154,8 +244,8 @@ structure_predictions = function(formula, data, predictions, method) {
       }
     }
 
-    # combine -- move to this instead: vctrs::vec_c()
-    prediction.frame = dplyr::bind_rows(dplyr::combine(predictions))
+    # combine -- gets rid of "Outer names are only allowed for unnamed scalar atomic inputs" warning
+    suppressWarnings(prediction.frame <- dplyr::bind_rows(predictions))
 
     # remove ".name" column if present
     if(rlang::has_name(prediction.frame, ".name")) {
@@ -395,7 +485,7 @@ results_coefficients = function(obj.formula, obj.draws, obj.data, times = NULL) 
 }
 
 # internal function to process and return predictions
-results_predictions = function(object, pr, obj.draws, method = c("observed values", "mean"), draws = 1000, times = NULL) {
+results_predictions = function(object, pr, obj.draws, method = c("observed values", "mean"), draws = 1000, times = NULL, m = NULL) {
   # do we have predictions
   if(is.null(pr)) {
     return(NULL)
@@ -405,6 +495,9 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
   if(!is.null(draws) && draws <= nrow(obj.draws)) {
     obj.draws = obj.draws[sample.int(nrow(obj.draws), size = draws), ]
   }
+
+  # set m to null if no list of formula
+  if(!is.list(object$formula)) m = NULL
 
   # type of predict
   if(any(class(object) %in% c("stansurv", "survival"))) {
@@ -519,7 +612,7 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
     # TODO: need to update to make it work with random effects -- requires setting is.mer
 
     # first get formatted data -- basically model.matrix -- average over random effects
-    pp.data = rstanarm:::pp_data(object, pr$data, re.form = NA, offset = rep(0, nrow(pr$data)))
+    pp.data = rstanarm:::pp_data(object, pr$data, re.form = NA, offset = rep(0, nrow(pr$data)), m = m)
 
     # summarize if desired
     # if(dplyr::first(method) == "observed values") {
@@ -540,15 +633,22 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
     #   pp.data$x = as.matrix(dplyr::select(pp.data$x, -.prediction.id))
     # }
 
+      # sometimes the object data (pp.data) can have more columns than actually ran so fix that -- occurs with fixed effects in frequentist models
+      if("frequentist" %in% class(object)) pp.data$x = as.matrix(pp.data$x[, colnames(pp.data$x)[colnames(pp.data$x) %in% colnames(obj.draws)]])
+
+      # obj.draws can also have missing values for the frequentist model -- if that is the case just make it zero
+      obj.draws[is.na(obj.draws)] = 0
+
+
     # get eta -- the built-in function needs stanmat to be an S4 object, which is a pain so just send it manually
     # if(any(object$algorithm == "bootstrap")) {
-      pp.eta = rstanarm:::pp_eta(object, pp.data, stanmat = as.matrix(obj.draws)) # would like to fix this if possible
+      pp.eta = rstanarm:::pp_eta(object = object, data = pp.data, stanmat = as.matrix(obj.draws), m = m) # would like to fix this if possible
     # } else {
     #   pp.eta = rstanarm:::pp_eta(object, pp.data)
     # }
 
     # get the linear predictors and then transform by the inverse link function -- all pretty basic
-    pp.args = rstanarm:::pp_args(object, pp.eta)
+    pp.args = rstanarm:::pp_args(object, pp.eta, m = m)
 
     # turn into usable data frame
     predict.df = tibble::as_tibble(t(pp.args$mu), .name_repair = "none")
@@ -658,53 +758,128 @@ results = function(object, predictions = NULL, method = c("observed values", "me
   # we cant do observed values and a variable with a distribution (memory problems) so just set to mean and go from there
   if(has.distributions) method = "mean"
 
+  # need to deal with the possibility that formula/data are lists and that draws contains values for each list item -- turn the draws into a list too if that is the case
+  if("list" %in% class(obj.formula)) {
+    # check to make sure data is also a list
+    if(!"list" %in% class(obj.data) | length(obj.data) != length(obj.formula)) {
+      stop("Expecting both formula and data to be the same length.")
+    }
+
+    # both formula and data are lists of the same length now turn draws into a list too if it isnt already
+    if(!"list" %in% class(obj.draws)) {
+      obj.draws.t = sapply(names(obj.formula), function(nm) {
+        # string to search for
+        str.draw = paste0(nm, "\\|")
+
+        # pull the values we need
+        t.draws = obj.draws[, colnames(obj.draws)[stringr::str_detect(colnames(obj.draws), str.draw)]]
+
+        # replace column names
+        colnames(t.draws) = stringr::str_replace_all(colnames(t.draws), str.draw, "")
+
+        # return
+        return(t.draws)
+      }, simplify = F)
+    }
+
+    # assemble
+    obj.info = lapply(1:length(obj.formula), function(i) {
+      list(obj.draws = obj.draws.t[[i]], obj.formula = obj.formula[[i]], obj.data = obj.data[[i]])
+    })
+
+    # set names
+    names(obj.info) = names(obj.formula)
+  } else {
+    # create a list of one
+    obj.info = list("y1" = list(obj.draws = obj.draws, obj.formula = obj.formula, obj.data = obj.data))
+  }
 
   ## create coefficient frames
 
-  # get coefficients
-  r.coefs = results_coefficients(obj.formula, obj.draws, obj.data)
+  # run through list
+  r.coefs = lapply(obj.info, function(obj) {
+    # get coefficients
+    r.coefs = results_coefficients(obj.formula = obj$obj.formula, obj.draws = obj$obj.draws, obj.data = obj$obj.data)
 
-  # summarize to get coefficient values
-  r.coefs = summarize_interval(r.coefs)
+    # summarize to get coefficient values
+    r.coefs = summarize_interval(r.coefs)
+
+    # return
+    return(r.coefs)
+  })
+
+  # combine
+  if(length(r.coefs) > 1) {
+    r.coefs = dplyr::bind_rows(r.coefs, .id = ".model")
+  } else {
+    r.coefs = r.coefs[[1]]
+  }
+
 
   ## create predictions and contrastsframe
 
   # get structured predictions
   if(!is.null(predictions)) {
     # structure predictions data frame
-    pr = structure_predictions(formula = obj.formula, data = obj.data, predictions = predictions, method = method)
+    pr = lapply(obj.info, function(x) structure_predictions(formula = x$obj.formula, data = x$obj.data, predictions = predictions, method = method))
 
-    # get predictions
-    predict.df = results_predictions(object = object, pr = pr, obj.draws = obj.draws, method = method, draws = draws, times = times)
+    ## A PROBLEM IS THAT pr$data can have negative values for a variable that is being logged, etc. -- this breaks "make_model_frame"
+
+    # run through the list for predictions - get predictions -- mvmer uses the full draws object so just pass that even though we made it nice above
+    predict.df = lapply(1:length(obj.info), function(m) results_predictions(object = object, pr = pr[[m]], obj.draws = obj.draws, method = method, draws = draws, times = times, m = m))
+    names(predict.df) = names(obj.info)
 
     # produce predictions that include the prediction id
-    r.preds = summarize_interval(predict.df, .grouping = c("prob"))
+    r.preds = lapply(predict.df, function(x) summarize_interval(x, .grouping = c("prob")))
 
     # get contrasts
-    contrast.df = results_contrasts(pr, predict.df)
+    contrast.df = lapply(names(predict.df), function(x) results_contrasts(pr[[x]], predict.df[[x]]))
+    names(contrast.df) = names(predict.df)
 
     # summarize
-    r.contr = summarize_interval(contrast.df, .grouping = c("prob"))
+    r.contr = lapply(names(contrast.df), function(x) {
+      # create contrast
+      t.contr = summarize_interval(contrast.df[[x]], .grouping = c("prob"))
 
-    # add prediction vars to contrasts
-    pr.add = lapply(stringr::str_split(r.contr$.prediction.id, ", "), function(ids) {
-      # select all the correct data frames to add
-      r = lapply(1:length(ids), function(i) {
-        prt = dplyr::distinct(dplyr::select(dplyr::filter(r.preds, .prediction.id == ids[i]),
-                                            -tidyselect::any_of(c(".prediction.id", ".time", "c", "c.low", "c.high", "p.value", "draws"))))
-        colnames(prt) = paste0(".id", i, ".", colnames(prt))
-        prt
+      # add prediction info
+      pred.vals = lapply(t.contr$.prediction.id, function(pred.id) {
+        # the id
+        pred.id = as.integer(unlist(stringr::str_split(pred.id, ", ")))
+
+        # collect prediction info
+        r = lapply(1:length(pred.id), function(id) {
+          # select
+          r = dplyr::select(dplyr::filter(pr[[x]]$predictions, .prediction.id == pred.id[id]), -.prediction.id)
+          r = r[, sapply(r, function(x) !all(is.na(x)))]
+
+          # set column names
+          colnames(r) = paste0("v", if(id %in% c(1, 2)) 1 else 2, ".", if(id %in% c(1, 3)) "high" else "low", ".p", 1:ncol(r))
+
+          # make it a character so we can stack the return
+          dplyr::mutate_all(r, as.character)
+        })
       })
 
       # bind
-      r = dplyr::bind_cols(r)
+      t.contr = dplyr::bind_cols(t.contr, dplyr::bind_rows(lapply(pred.vals, dplyr::bind_cols)))
 
       # return
-      r
+      return(t.contr)
     })
+    names(r.contr) = names(contrast.df)
 
-    # add to contrasts
-    r.contr = dplyr::bind_cols(r.contr, dplyr::bind_rows(pr.add))
+    # combine all lists
+    if(length(r.preds) > 1) {
+      predict.df = dplyr::bind_rows(predict.df, .id = ".model")
+      r.preds = dplyr::bind_rows(r.preds, .id = ".model")
+      contrast.df = dplyr::bind_rows(contrast.df, .id = ".model")
+      r.contr = dplyr::bind_rows(r.contr, .id = ".model")
+    } else {
+      predict.df = predict.df[[1]]
+      r.preds = r.preds[[1]]
+      contrast.df = contrast.df[[1]]
+      r.contr = r.contr[[1]]
+    }
   } else {
     # set everything to null
     predict.df = NULL
@@ -751,7 +926,7 @@ results = function(object, predictions = NULL, method = c("observed values", "me
 #' results_mediation(m.mediator, m.outcome, predictions = predictions.mediation)
 #'
 
-results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, .outcome = NULL) {
+results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, draws = 1000, .outcome = NULL) {
   # use imai's updated baron-kenney approach to do mediation analysis
 
   # basic idea:
@@ -760,7 +935,7 @@ results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, .
   #   identify change in outcome due to change in mediator caused by treatment
 
   # get the effect of predictions on the mediator -- should it just pass back the full matrix and the summaries
-  effect.mediator = results(object = m.mediator, predictions = predictions, times = times, .full.matrix = T)
+  effect.mediator = results(object = m.mediator, predictions = predictions, times = times, draws = draws, .full.matrix = T)
 
   # currently we are using point predictions for the effect of the treatment on the mediator
   # we should take into account uncertainty in this when carrying through our estimate of the indirect effect -- so if the treatment on the mediator is insignificant this needs to be accounted for
@@ -785,7 +960,7 @@ results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, .
 
 
   # get raw data on mediation effect -- we need to bring in uncertainty about the effect of the treatment on mediator when producing predictions
-  effect.outcome = results(object = m.outcome, predictions = c(predictions, pr.mediator), times = times, .full.matrix = T)
+  effect.outcome = results(object = m.outcome, predictions = c(predictions, pr.mediator), times = times, draws = draws, .full.matrix = T)
 
   # identify pairs -- this is the prediction for the treatment paired with the prediction for the mediator caused by the treatment
   # could modify to rely on the structure predictions function instead of hand coding here
