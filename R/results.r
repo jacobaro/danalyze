@@ -1385,8 +1385,8 @@ qualitative_assessment = function(research.plan, all.results) {
   interaction.res = purrr::map_dfr(all.results, "interaction.contrasts", .id = ".main.variable")
   mediation.res = purrr::map_dfr(all.results, "mediation.contrasts", .id = ".main.variable")
 
-  # # duplicates in mediation.res because our plan had duplicates -- should get the plan to check duplicates
-  # mediation.res = mediation.res[!duplicated(dplyr::select(mediation.res, .main.variable, .main.mediation, .outcome, .effect)), ]
+  # duplicates in mediation.res because our plan had duplicates -- should get the plan to check duplicates -- take this out ASAP!
+  if(nrow(mediation.res) > 0) mediation.res = mediation.res[!duplicated(dplyr::select(mediation.res, .main.variable, .main.mediation, .outcome, .effect)), ]
 
   # how many significant values would you need to look through
   # table(c(main.res$p.value, interaction.res$p.value, mediation.res$p.value) < 0.1)
@@ -1542,7 +1542,7 @@ qualitative_assessment = function(research.plan, all.results) {
   # two ways to summarize -- by variable and by outcome
 
   # summarize by outcome
-  all.signif.outcome = dplyr::group_map(dplyr::group_by(all.signif.outcome, .outcome, direction), ~ {
+  all.signif.outcome.str = dplyr::group_map(dplyr::group_by(all.signif.outcome, .outcome, direction), ~ {
     # determine if there are multiple variables
     .plural = if(dplyr::n_distinct(.x$.main.label) > 1) T else F
 
@@ -1621,7 +1621,7 @@ qualitative_assessment = function(research.plan, all.results) {
   # if we look at conditionality we get information overload; if we don't we can get misleading estimates; really this will work best when a user can select some conditions under which they want to estimate effects
 
   # rank order effects
-  all.signif.ranked = dplyr::group_map(dplyr::group_by(dplyr::filter(all.signif, significance != "possible"), .outcome, direction), ~ {
+  all.signif.ranked.str = dplyr::group_map(dplyr::group_by(dplyr::filter(all.signif, significance != "possible"), .outcome, direction), ~ {
     # arrange by largest effect first
     signif.arrange = dplyr::arrange(.x, dplyr::desc(percent))
 
@@ -1645,15 +1645,15 @@ qualitative_assessment = function(research.plan, all.results) {
     }, .keep = T)
 
     # create string -- also deal with no time being present
-    paste0(if(is.na(unique(.x$time))) "In general " else paste0("In the ", unique(.x$time), " run "), paste_list(str))
+    paste0(if(all(is.na(unique(.x$time)))) "In general " else paste0("In the ", unique(.x$time), " run "), paste_list(str))
   }, .keep = T)
 
 
   # set the names
-  names(all.signif.outcome) = apply(unique(dplyr::select(dplyr::ungroup(all.signif), .outcome, direction)), 1, paste, collapse = ", ")
-  names(all.signif.ranked) = apply(unique(dplyr::select(dplyr::ungroup(all.signif), .outcome, direction)), 1, paste, collapse = ", ")
+  names(all.signif.outcome.str) = apply(unique(dplyr::select(dplyr::ungroup(all.signif.outcome), .outcome, direction)), 1, paste, collapse = ", ")
+  names(all.signif.ranked.str) = apply(unique(dplyr::select(dplyr::ungroup(all.signif), .outcome, direction)), 1, paste, collapse = ", ")
 
   # return -- has main effects, interaction effects, and mediation effects sorted by outcome
-  return(list(all = all.signif.outcome, ranked = all.signif.ranked))
+  return(list(all = all.signif.outcome.str, ranked = all.signif.ranked.str))
 }
 
