@@ -7,5 +7,5 @@
 parse_contrast(df)
 }
 \description{
-Helper function to parse the 'contrasts' string in a result.
+Currently this function should not be used as it is built in to to the 'results' function.
 }

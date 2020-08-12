@@ -23,5 +23,11 @@ This function produces a table of summary statistics based on a formula and a da
 get_summary_statistics(formula.list = ~ variable, data = df, labels = c("variable" = "label"))
 
 }
+\seealso{
+Other post analysis exploration: 
+\code{\link{get_variable_effects}()},
+\code{\link{identify_examples}()}
+}
+\concept{post analysis exploration}
 \keyword{summary}
 \keyword{summary_stats,}

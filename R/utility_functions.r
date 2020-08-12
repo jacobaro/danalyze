@@ -1,13 +1,29 @@
 # utility functions
 
-# internal function to remove backticks from a string
+#' Remove backticks.
+#'
+#' This function takes in a string and outputs a string with
+#' backticks removed.
+#'
+#' @param str The string to remove backticks from.
+#' @return A string with backticks removed.
+#' @export
+#'
 remove_backticks = function(str) {
   r = sapply(str, function(x) { if(substring(x, 1, 1) == "`") x = substring(x, 2); l = nchar(x); if(substring(x, l, l) == "`") x = substring(x, 1, l - 1); x })
   r = as.character(r)
   r
 }
 
-# fast identification of baseline hazard
+#' Fast identification of baseline hazard.
+#'
+#' This function takes in a survival model and outputs a list with the
+#' baseline hazard and time.
+#'
+#' @param model A survival model running using the "survival" package.
+#' @return A list with the baseline hazard and time.
+#' @export
+#'
 fast_bh = function(model) {
   # get survfit
   sfit = survival::survfit(model, se.fit = F)
@@ -24,16 +40,18 @@ as.character.formula = function(f) {
   paste(trimws(deparse(f)), collapse = " ")
 }
 
-# transformation functions
-
-#' log1p for positive and negative values
+#' Symmetric 'log1p'.
 #'
+#' This function takes in a positive or negative number and returns correctly
+#' transformed values.
+#'
+#' @param x A numeric vector.
+#' @return The transformed numeric vector.
 #' @export
 #'
 symlog = function(x) { sign(x) * log1p(abs(x)) }
 
-#' sqrt for positive and negative values
-#'
+#' @rdname symlog
 #' @export
 #'
 symsqrt = function(x) { sign(x) * sqrt(abs(x)) }
@@ -45,13 +63,22 @@ intersect_all = function(...) {
   Reduce(intersect, list(...))
 }
 
-# function to collapse time -- could really recode this to do start and end time using blocks of X time that would be neat
-
-#' Summarize a dataframe to a different unit of analysis.
+#' Collapse time.
 #'
+#' Summarize a dataframe to different units of analysis. The 'time.var' is
+#' divided by 'time.factor' and turned into an integer.
+#'
+#' @param data The data to summarize.
+#' @param time.var Symbols identifying the time variable in data.
+#' @param time.factor A number that 'time.var' will be divided by.
+#' @param group.by A vector of symbols that identify the unit of analysis.
+#' @param variables A list of variables to apply special functions to.
+#' @return A summarized dataframe.
 #' @export
 #'
 collapse_time = function(data, time.var, time.factor, group.by, variables) {
+  # function to collapse time -- could really recode this to do start and end time using blocks of X time that would be neat
+
   # first make sure it is not grouped
   data = dplyr::ungroup(data)
 
@@ -118,17 +145,36 @@ collapse_time = function(data, time.var, time.factor, group.by, variables) {
   return(data.full)
 }
 
-# function to create prediction values
-
-#' Easily create values for prediction.
+#' Create high and low values
 #'
+#' This function takes in a vector (numeric or character) and outputs nicely formatted
+#' test values.
+#'
+#' @param x A numeric vector.
+#' @param .quantile The high and low quantiles for a numeric vector.
+#' @param .places The number of places to round a numeric vector to.
+#' @return For a numeric vector this function return high and low values.
+#'   For a character vector this returns unique values.
 #' @export
 #'
-create_values = function(x, .places = 2) {
+create_values = function(x, .quantile = c(0.975, 0.025), .places = 2) {
+  # make sure quantile is okay
+  if(!is.numeric(.quantile) | !length(.quantile) == 2) {
+    warning("Quantile is not structured correctly. Using default.")
+    .quantile = c(0.975, 0.025)
+  }
+
   # check
   if(is.numeric(x)) {
+    # if there are a large number of zeros than we want to produce values absent zero
+    if((length(x == 0) / length(x)) > 0.75) {
+      x.t = x[x != 0]
+    } else {
+      x.t = x
+    }
+
     # get quantile
-    r = quantile(x, c(0.975, 0.025), na.rm = T)
+    r = quantile(x.t, .quantile, na.rm = T)
 
     # make sure the values are okay
     if(diff(range(r)) < .Machine$double.eps ^ 0.5) {

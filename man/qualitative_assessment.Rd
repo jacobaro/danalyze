@@ -2,10 +2,31 @@
 % Please edit documentation in R/results.r
 \name{qualitative_assessment}
 \alias{qualitative_assessment}
-\title{Provide a qualitative assessment for a set of results (main, interaction, and mediation effects)}
+\title{Provide a qualitative assessment for a set of results (main, interaction, and mediation effects).}
 \usage{
 qualitative_assessment(research.plan, all.results)
 }
-\description{
-Provide a qualitative assessment for a set of results (main, interaction, and mediation effects)
+\arguments{
+\item{research.plan}{Object returned from 'research_plan' function.}
+
+\item{all.results}{Object returned from 'analyze_plan' function.}
 }
+\value{
+A list providing an English-language description of the results for each outcome/direction. Currently, the
+  a description of all of the variables that impact an outcome in a direction (and when and how), as well as a rank
+  ordering of the magnitude of the effect of the variables for an outcome in a direction. Only results that are
+  statistically significant at the 0.1 level or better are described.
+}
+\description{
+This function provides a human interpretable understanding of a research plan and the results from analyzing
+the research plan.
+}
+\seealso{
+Other results: 
+\code{\link{results_mediation}()},
+\code{\link{results}()},
+\code{\link{summarize_interval}()}
+}
+\concept{results}
+\keyword{qualitative}
+\keyword{results,}

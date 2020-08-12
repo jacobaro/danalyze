@@ -2,7 +2,7 @@
 % Please edit documentation in R/results.r
 \name{results_mediation}
 \alias{results_mediation}
-\title{Function to run a mediation analysis.}
+\title{Function to run mediation analysis.}
 \usage{
 results_mediation(
   m.mediator,
@@ -20,15 +20,36 @@ results_mediation(
 
 \item{predictions}{A 'pr_list' object with the desired change in the treatment. The treatment should be in both equations.}
 
-\item{.outcome}{Optional name for the outcome. If this is missing the name of the variable is used automatically.}
+\item{times}{An optional vector indicating the time(s) to conduct the mediation analysis if the outcome is a survival model.}
+
+\item{draws}{An optional integer indicating the number of draws (randomly sampled) from the results to use. Smaller values allow a
+faster run.}
+
+\item{.outcome}{Optional name for the outcome. If this is missing the name of the dependent variable in 'm.outcome' is used.}
+}
+\value{
+A datafame showing the direct effect, the indirect effect, the total effect, the portion of the total effect mediated,
+  and the effect of the treatment on the mediator.
 }
 \description{
-This function allows you to run mediation analysis based on two sets of returns from the 'analysis' function.
+This function allows you to run mediation analysis based on two sets of returns from the 'analysis' function. The dependent variable
+from 'm.mediator' must be present as an independent variable in 'm.outcome.' Transformations in the outcome model are allowed but transformations
+in the mediator are not.
+}
+\details{
+All estimated effects are on the scale of the response variable.
 }
 \examples{
 results_mediation(m.mediator, m.outcome, predictions = predictions.mediation)
 
 }
+\seealso{
+Other results: 
+\code{\link{qualitative_assessment}()},
+\code{\link{results}()},
+\code{\link{summarize_interval}()}
+}
+\concept{results}
 \keyword{bootstrap}
 \keyword{mediation}
 \keyword{results}

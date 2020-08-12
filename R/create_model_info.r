@@ -1,6 +1,6 @@
 # functions to set model info
 
-# supported model types
+# supported model types -- could make this a function
 model.type.list =
   list(
     linear = "Gaussian",
@@ -14,9 +14,18 @@ model.type.list =
     comp.risk = "Competing Risks"
   )
 
-# function to parse the formula and data and pull out relevant components
-# input: raw formula and raw data
-# output: parsed formula, identificaiton of random/fixed effects, formula and data to run on
+#' Parse a formula into its component parts.
+#'
+#' This internal function takes a formula and data, parses the various components of the formula,
+#' formats the data, and returns everything as a list.
+#'
+#' @family model setup functions
+#' @param formula A formula in the format 'outcome ~ variables + specials' with all special components.
+#' @param data The raw data that the formula will be run on.
+#' @return A list with the transformed formula, the transformed data (based on functions in the formula),
+#' original data, the originak formula, the response variables, the explanatory variables, the special
+#' components to add to the formula, the random effects, and the fixed effects.
+#'
 parse_formula = function(formula, data) {
   ## setup a few variables
 
@@ -114,9 +123,16 @@ parse_formula = function(formula, data) {
   return(r)
 }
 
-# function to determine the type of model to run
-# input: parsed formula and raw data
-# output: model type
+#' Determine the type of model to run.
+#'
+#' This internal function takes the parsed formula and raw data and determines the type of
+#' model that should be run.
+#'
+#' @family model setup functions
+#' @param formula.parsed A parsed formula object returned from the function 'parse_formula'.
+#' @param data The raw data that the formula will be run on.
+#' @return A character vector that identifies the type of model to be run based on the formula and data.
+#'
 determine_model = function(formula.parsed, data) {
   # make character
   response.char = as.character(formula.parsed$response[2])
@@ -207,10 +223,34 @@ determine_model = function(formula.parsed, data) {
   return(model.type)
 }
 
-# identify time varying covariates for survival model
-# more info: https://cran.r-project.org/web/packages/survival/vignettes/timedep.pdf + https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6015946/
-# https://myweb.uiowa.edu/pbreheny/7210/f15/notes/12-1.pdf + https://arxiv.org/pdf/2002.09633.pdf
+#' Determine whether a survival model needs to be run with time-varying hazards.
+#'
+#' This internal function takes a (survival) formula and data and determines if
+#' any variables need to be run with time-varying hazards. Optionally focus only
+#' on 'var' variables.
+#'
+#' The basic logic is to run the model conventionally and test the proportional hazards
+#' assumption using 'cox.zph' in the 'survival' package. Test works with normal survival
+#' models run using 'coxph' and mixed-effects models run using 'coxme'.
+#'
+#' If time-varying hazards are identified than the appropriate variables are modified in
+#' the formula.
+#'
+#' @family model setup functions
+#' @param formula A formula for the survival model to be run.
+#' @param data The raw data that the formula will be run on.
+#' @param var An optional vector indicating which variables to focus on (e.g., when running causal analysis).
+#' If 'var' is not null, non-proportional hazards for remaining variables are ignored.
+#' @param random.effects A logical variable indicating whether the formula has random effets. If so,
+#'   a mixed-effects Cox model is run.
+#' @return A data frame with the list of variables (or a subset if 'var' is set) and whether the variable
+#'   has fails the proportional hazards assumption.
+#'
 identify_tve = function(formula, data, var = NULL, random.effects = F) {
+  # identify time varying covariates for survival model
+  # more info: https://cran.r-project.org/web/packages/survival/vignettes/timedep.pdf + https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6015946/
+  # https://myweb.uiowa.edu/pbreheny/7210/f15/notes/12-1.pdf + https://arxiv.org/pdf/2002.09633.pdf
+
   # a time varying covariate just means the beta varies with time B = B * X + B(t) * X
   # when producing predictions this just means that the linear predictors are a function of time
 
@@ -274,10 +314,34 @@ identify_tve = function(formula, data, var = NULL, random.effects = F) {
   return(var.tdh)
 }
 
-# function to assemble the model calls for running
-# input: model type, parsed formula, extra arguments
-# output: list to allow a call to model functions (run, predict, residual) and extra model libraries
+#' Produce an object with model-specific functions and arguments.
+#'
+#' This internal function takes the model type, parsed formula, inference, and extra args and returns
+#' a list with all of the specific information (e.g., extra functions) needed to run the model. The output
+#' is used in the frequentist and Bayesian internal model run functions.
+#'
+#' For linear and categorical regression, the performance metric is log-posterior. For survival models concordance is used.
+#' For survival models, mean_PPD is the occurrence of the outcome minus the residual.
+#'
+#' @family model setup functions
+#' @param model.type The type of model to run.
+#' @param formula.parsed The parsed formula object.
+#' @param inference Whether the model should be run using 'frequentist' or 'Bayesian' inference.
+#' @param model.extra.args Extra arguments passed to the function used to run the model.
+#' @param main.ivs A list of the main effects (e.g., a treatment) that the analysis is focused on. Used on
+#'   to identify if a survival model has time-varying hazards.
+#' @return Based on the type of model to run and the statistical inference used, this function returns a list of
+#' model-specific functions and flags that allow the model to be easily run.
+#'
+#' The functions model_run.frequentist' and 'model_run.bayesian' take the returns from this function and actually run the model.
+#' For a frequentist approach the model is run once for each random sample of the main data. For the Bayesian approach
+#' the model is run once for each chain.
+#'
 produce_model_function = function(model.type, formula.parsed, inference, model.extra.args = NULL, main.ivs = NULL) {
+  # function to assemble the model calls for running
+  # input: model type, parsed formula, extra arguments
+  # output: list to allow a call to model functions (run, predict, residual) and extra model libraries
+
   # the return list -- could make it an s4 class
   model.extra = list(
     # main model calls

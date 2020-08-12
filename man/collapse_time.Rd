@@ -2,10 +2,25 @@
 % Please edit documentation in R/utility_functions.r
 \name{collapse_time}
 \alias{collapse_time}
-\title{Summarize a dataframe to a different unit of analysis.}
+\title{Collapse time.}
 \usage{
 collapse_time(data, time.var, time.factor, group.by, variables)
 }
+\arguments{
+\item{data}{The data to summarize.}
+
+\item{time.var}{Symbols identifying the time variable in data.}
+
+\item{time.factor}{A number that 'time.var' will be divided by.}
+
+\item{group.by}{A vector of symbols that identify the unit of analysis.}
+
+\item{variables}{A list of variables to apply special functions to.}
+}
+\value{
+A summarized dataframe.
+}
 \description{
-Summarize a dataframe to a different unit of analysis.
+Summarize a dataframe to different units of analysis. The 'time.var' is
+divided by 'time.factor' and turned into an integer.
 }

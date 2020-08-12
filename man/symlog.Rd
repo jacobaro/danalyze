@@ -2,10 +2,20 @@
 % Please edit documentation in R/utility_functions.r
 \name{symlog}
 \alias{symlog}
-\title{log1p for positive and negative values}
+\alias{symsqrt}
+\title{Symmetric 'log1p'.}
 \usage{
 symlog(x)
+
+symsqrt(x)
+}
+\arguments{
+\item{x}{A numeric vector.}
+}
+\value{
+The transformed numeric vector.
 }
 \description{
-log1p for positive and negative values
+This function takes in a positive or negative number and returns correctly
+transformed values.
 }

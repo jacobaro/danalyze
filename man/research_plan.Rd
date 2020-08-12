@@ -36,6 +36,9 @@ research_plan(
 
 \item{lag}{Optional vector containing the number of lags to use.}
 }
+\value{
+A research plan object that contains all the formulas and data to allow automated analysis.
+}
 \description{
 This function produces a set of formulas and new data for testing a research plan.
 }
@@ -45,5 +48,20 @@ control = c("wdi.economy", "wdi.terrain"), data = data,
 unit = list(unit = "dispute.id", time = "time"), lag = 1:2)
 
 }
+\seealso{
+Other research plan functions: 
+\code{\link{add_transform}()},
+\code{\link{analyze_plan}()},
+\code{\link{build_other_values}()},
+\code{\link{create_new_formula}()},
+\code{\link{create_plan_data}()},
+\code{\link{create_research_formulas}()},
+\code{\link{create_variable_table}()},
+\code{\link{formula_iv_as_dv}()},
+\code{\link{identify_problematic_variables}()},
+\code{\link{identify_variable_transformations}()},
+\code{\link{trim_formula}()}
+}
+\concept{research plan functions}
 \keyword{formulas,}
 \keyword{variables}

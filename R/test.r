@@ -30,7 +30,7 @@ test_glm = function() {
   summary(glm(f, dt, family = gaussian))
   summary(glm(f, dt, family = gaussian, weights = dt$.weights))
   summary(glm(f.full, dt, family = gaussian))
-  summary(MASS::glm.nb(f.nb, dt, weights = dt$.weights))
+  summary(MASS::glm.nb(formula = f.nb, data = dt, weights = dt$.weights))
 
 
   ## RUN THIS VERSION
@@ -39,6 +39,8 @@ test_glm = function() {
   out.unweighted = analysis(runs = 1000, formula = f, data = dt)
   out.full = analysis(runs = 1000, formula = f.full, data = dt)
   out.weighted = analysis(runs = 1000, formula = f, data = dt, weights = dt$.weights)
+
+  # also automatically supports over-dispersed count data -- determined based on the nature of the data for dependent variable (integer, non-negative)
   out.nb = analysis(runs = 1000, formula = f.nb, data = dt, weights = dt$.weights)
 
   # create a hypothesis that we want to test -- in this case the impact of moving from a value of '0' to '1' for "treat"
@@ -47,10 +49,35 @@ test_glm = function() {
   # examine the results, which should be very close to the summaries above
   results(object = out.unweighted, predictions = predictions)
   results(object = out.weighted, predictions = predictions)
-  results(object = out.full, predictions = c(predictions, pr_list(age = c(44, 25))))
+  results(object = out.full, predictions = predictions)
   results(object = out.nb, predictions = predictions)
 
-  # results should be comparable to the above
+  # results should be comparable to the above (contrasts show the treatment effect)
+
+
+  ## MODEL CAN ALSO BE RUN USING BAYESIAN INFERENCE
+
+  # run -- currently weights don't work as expected for glm models in the rstanarm package so run without
+  out.bayes.full = analysis(runs = 1000, formula = f.full, data = dt, inference = "bayesian")
+
+  # get results for bayesian version
+  results(object = out.bayes.full, predictions = predictions)
+
+  # results should match the full model run using lm and using the non-bayesian version of the model
+
+
+  ## ADDITIONAL OPTIONS
+
+  # also supports multiple predictions
+  results(object = out.full, predictions = c(predictions, pr_list(age = c(44, 25))))
+
+  # to make the analysis faster, select fewer draws
+
+  # analyze with a lot of runs
+  out.weighted = analysis(runs = 5000, formula = f, data = dt, weights = dt$.weights)
+
+  # produce results faster by using a random sample of draws
+  results(object = out.full, predictions = c(predictions, pr_list(age = c(44, 25))), draws = 500)
 }
 
 # run tests for survival analysis
@@ -80,12 +107,18 @@ test_survival = function() {
   out = analysis(runs = 1000, formula = f, data = mela.pop, cluster = ~ id)
   out.bayes = analysis(runs = 500, formula = f, data = mela.pop, inference = "bayesian")
 
+  # also try with an exponential baseline hazard
+  out.bayes.exp = analysis(runs = 500, formula = f, data = mela.pop, inference = "bayesian", model.extra.args = list(basehaz = "exp"))
+
   # create prediction list
   predictions = pr_list(sex = c(2, 1))
 
   # get results -- should be comparable across methods and the coefs should be similar to the above
   results(object = out, predictions = predictions, times = 1:4)
   results(object = out.bayes, predictions = predictions, times = 1:4)
+  results(object = out.bayes.exp, predictions = predictions, times = 1:4)
+
+  # the bayesian version uses a different approach for the baseline hazard (and has priors) so results will vary slightly
 }
 
 # runs a test for mediation analysis -- compares output from this package to 'mediation'
@@ -106,7 +139,7 @@ test_mediation = function() {
   m.y = lm(depress2 ~ treat + job_seek + econ_hard + sex + age, data = jobs)
 
   # run -- indirect effect: first difference for mediator caused by treatment holding treatment constant; direct effect: first difference for treatment holding mediator constant
-  m.mediate = mediation::mediate(m.m, m.y, sims = 1000, treat = "treat", mediator = "job_seek", boot = T)
+  m.mediate = mediation::mediate(m.m, m.y, sims = 1000, treat = "treat", mediator = "job_seek")
 
   # show results
   summary(m.mediate)
@@ -122,10 +155,88 @@ test_mediation = function() {
   m.predictions = pr_list(treat = c(1, 0))
 
   # get mediation results
-  out.med = results_mediation(m.mediator = md.m, m.outcome = md.y, predictions = m.predictions)
+  out.med = results_mediation(m.mediator = md.m, m.outcome = md.y, predictions = m.predictions, draws = 500)
 
   # show results
   out.med
 
   # p-values and effect sizes should be very similar (direct.effect == ADE, indirect.effect == ACME, etc.) -- in particular the "indirect.effect" should fully capture uncertainty in both models
+
+
+  ## ALSO COMPARE BAYESIAN VERSION
+
+  # bayesian mediation models
+  md.bayes.m = analysis(runs = 2000, formula = job_seek ~ treat + econ_hard + sex + log1p(age), data = jobs, inference = "bayesian")
+  md.bayes.y = analysis(runs = 2000, formula = depress2 ~ treat + job_seek + econ_hard + sex + log1p(age), data = jobs, inference = "bayesian")
+
+  # show effect
+  out.med.bayes = results_mediation(m.mediator = md.bayes.m, m.outcome = md.bayes.y, predictions = m.predictions, draws = 500)
+  out.med.bayes
+
+  # results should essentially be the same as the non-bayesian version
+}
+
+# test the research plan
+test_plan = function() {
+  ## SETUP DATA
+
+  # load library
+  library(danalyze)
+
+  # load data
+  data(lalonde.psid, package = "causalsens")
+
+  # set the data
+  dt = lalonde.psid
+
+  # make race a categorical variable -- doesnt need to happen just makes things a little neater
+  dt$race = dplyr::case_when(
+    dt$black == 1 ~ "Black",
+    dt$hispanic == 1 ~ "Hispanic",
+    T ~ "Other"
+  )
+
+  # identify main variables
+  treatment = c(
+    "Job training" = "treat"
+  )
+
+  # identify interactions
+  interaction = c(
+    "Race" = "race",
+    "Married" = "married",
+    "No Degree" = "nodegree"
+  )
+
+  # other controls
+  control = c(
+    "Age" = "age",
+    "Education" = "education",
+    "Race" = "race",
+    "Married" = "married",
+    "No Degree" = "nodegree",
+    "Earnings in 1975" = "re75",
+    "Earnings in 1974" = "re74"
+  )
+
+  # create a plan -- not terribly interesting since the data is so simple
+  plan = research_plan(
+    treatment = treatment,
+    interaction = interaction,
+    control = control,
+    data = dt
+  )
+
+  # set outcome as extra for now -- will not be needed eventually
+  plan$outcome = .outcome ~ .
+  plan$outcome.occurrence = list("Earnings" = dt$re78)
+
+  # now analyze the plan
+  results = analyze_plan(research.plan = plan)
+
+  # produce qualitative assessment -- will return NULL if no variables or conditional effects are significant
+  assessment = qualitative_assessment(research.plan = plan, all.results = results)
+
+  # print results
+  assessment
 }

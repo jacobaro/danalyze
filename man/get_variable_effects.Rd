@@ -2,7 +2,7 @@
 % Please edit documentation in R/results.r
 \name{get_variable_effects}
 \alias{get_variable_effects}
-\title{Create predictions for all variables in a formula.}
+\title{Create predicitons for all variables in a formula}
 \usage{
 get_variable_effects(
   variables,
@@ -12,6 +12,37 @@ get_variable_effects(
   .perc = c(0.1, 0.9)
 )
 }
-\description{
-Create predictions for all variables in a formula.
+\arguments{
+\item{variables}{A formula or list of formulas that indicate which variables are included in summary statistics.}
+
+\item{data}{Dataframe with variables to produce summary statistics from.}
+
+\item{labels}{An optional vector of labels: c("variable" = "label).}
+
+\item{.variable.set}{An optional subset of variables to examine.}
+
+\item{.perc}{For numeric variables this sets the low and high quantile values. The default is to examine the
+effect of moving from the 10th percentile (0.1) to the 90th percentile (0.9).}
 }
+\value{
+A dataframe that shows the impact of all variables (median, confidence interval, and P-value). If labels
+  are provided this dataframe will also contain the labels.
+}
+\description{
+This function generates a list of predictions based on the data for all variables in the 'variables' formula. This is an
+alternative to showing coefficient estimates. Coefficient estimates can be hard to interpret or compare. This function
+produces standardized effect estimates for all variables.
+}
+\details{
+For character (factor) variables, all unique values of the variable are compared against each other. For numeric variables, the
+impact of moving from the 10th to the 90th percentile is estimated.
+}
+\seealso{
+Other post analysis exploration: 
+\code{\link{get_summary_statistics}()},
+\code{\link{identify_examples}()}
+}
+\concept{post analysis exploration}
+\keyword{coefficients,}
+\keyword{effects}
+\keyword{summary,}

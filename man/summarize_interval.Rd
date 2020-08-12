@@ -20,13 +20,25 @@ summarize_interval(
 
 \item{.round}{The number of digits to round the results to. Can be set to 'NULL' to prevent rounding.}
 }
+\value{
+A dataframe that contains the variable name, the median value, the lower confidence interval, the upper confidence
+  interval, the simulated P-value, and the number of "draws" used to produce the confidence interval.
+}
 \description{
-This function summarizes predictions to create confidence intervals.
+This function summarizes predictions to create confidence intervals. This works for both the results of
+a bootstrap and the posterior distribution of a Bayesian analysis.
 }
 \examples{
 summarize_interval(results)
 
 }
+\seealso{
+Other results: 
+\code{\link{qualitative_assessment}()},
+\code{\link{results_mediation}()},
+\code{\link{results}()}
+}
+\concept{results}
 \keyword{ci}
 \keyword{confidence_interval}
 \keyword{prediction}

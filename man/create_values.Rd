@@ -2,10 +2,22 @@
 % Please edit documentation in R/utility_functions.r
 \name{create_values}
 \alias{create_values}
-\title{Easily create values for prediction.}
+\title{Create high and low values}
 \usage{
-create_values(x, .places = 2)
+create_values(x, .quantile = c(0.975, 0.025), .places = 2)
+}
+\arguments{
+\item{x}{A numeric vector.}
+
+\item{.quantile}{The high and low quantiles for a numeric vector.}
+
+\item{.places}{The number of places to round a numeric vector to.}
+}
+\value{
+For a numeric vector this function return high and low values.
+  For a character vector this returns unique values.
 }
 \description{
-Easily create values for prediction.
+This function takes in a vector (numeric or character) and outputs nicely formatted
+test values.
 }

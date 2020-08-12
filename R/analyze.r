@@ -12,7 +12,6 @@
 #' @examples
 #' pr_list(treatment = c(1, 0), condition = c("High", "Low"), .constant = "condition")
 #'
-
 pr_list = function(..., .constant = NULL, .diff.in.diff = NULL, .add = NULL) {
   # expand to create combinations -- moving to expand_grid (or removing strings as factors) fixes a problem with predictions being reversed
   pr = dplyr::as_tibble(tidyr::expand_grid(...))
@@ -118,9 +117,6 @@ pr_list = function(..., .constant = NULL, .diff.in.diff = NULL, .add = NULL) {
   return(pr.full)
 }
 
-# generate resamples -- http://jee3.web.rice.edu/cluster-paper.pdf
-# resample hierarchical data: http://biostat.mc.vanderbilt.edu/wiki/Main/HowToBootstrapCorrelatedData + https://stats.idre.ucla.edu/r/dae/mixed-effects-logistic-regression/
-
 #' Function to resample a dataframe that takes into account user-specified weights and clusters.
 #'
 #' This function allows you to resample a dataframe for analysis.
@@ -133,8 +129,11 @@ pr_list = function(..., .constant = NULL, .diff.in.diff = NULL, .add = NULL) {
 #' @examples
 #' resample_df(data, n = 2000, cluster = ~ cluster, weights = data$.weights)
 #'
-
 resample_df = function(data, n = 1000, cluster = NULL, weights = NULL) {
+  # generate resamples -- http://jee3.web.rice.edu/cluster-paper.pdf
+  # resample hierarchical data: http://biostat.mc.vanderbilt.edu/wiki/Main/HowToBootstrapCorrelatedData +
+  # https://stats.idre.ucla.edu/r/dae/mixed-effects-logistic-regression/
+
   # the basic idea is to resample clusters based on average weight and then resample observations within a clsuter based on individual weights
 
   # add row id
@@ -156,7 +155,7 @@ resample_df = function(data, n = 1000, cluster = NULL, weights = NULL) {
   clust = dplyr::arrange(clust, .group.id, .weights)
 
   # set unique groups with weights equal to the average weight in a group
-  groups = dplyr::summarize(dplyr::group_by(clust, .group.id), .group.length = dplyr::n(), .group.weights = sum(.weights) / dplyr::n())
+  groups = dplyr::summarize(dplyr::group_by(clust, .group.id), .group.length = dplyr::n(), .group.weights = sum(.weights) / dplyr::n(), .groups = "keep")
 
   # get the indices
   if(nrow(groups) == nrow(data)) {
@@ -191,9 +190,22 @@ resample_df = function(data, n = 1000, cluster = NULL, weights = NULL) {
   return(idx.full)
 }
 
-# new basic model function that just runs the model
-# what is needed: libraries, data, formula, model, model args, converge check, cleaner
+#' Run a frequentist model
+#'
+#' This internal function runs a frequentist model and returns the results.
+#'
+#' @param idx A numeric vector of observations in the data to use (for bootstrapping).
+#' @param formula.parsed The parsed formula object.
+#' @param model.functions The model object to run on the data.
+#' @return A return list formatted to allow compatibility with 'rstanarm'. The list has
+#'   the following items: 'alpha' is the intercept, 'beta' is the vector of coefficients,
+#'   'aux' is the auxiliary paratmeter for the model, 'mean_PPD' is the mean prediction using
+#'   the response scale, 'lp_' is the performance metric.
+#'
 model_run.frequentist = function(idx, formula.parsed, model.functions) {
+  # new basic model function that just runs the model
+  # what is needed: libraries, data, formula, model, model args, converge check, cleaner
+
   # set data
   df = formula.parsed$data[idx, ]
 
@@ -239,7 +251,15 @@ model_run.frequentist = function(idx, formula.parsed, model.functions) {
   return(list(alpha = alpha, beta = beta, aux = aux, mean_PPD = mean_PPD, lp_ = lp_))
 }
 
-# the model function
+#' Run a Bayesian model
+#'
+#' This internal function runs a Bayesian model and returns the results. Each run uses a single chain/core.
+#'
+#' @param chain.id A unique ID to assign to the chain.
+#' @param formula.parsed The parsed formula object.
+#' @param model.functions The model object to run on the data.
+#' @return A return list that includes both the full model and the 'stanfit' component.
+#'
 model_run.bayesian = function(chain.id, formula.parsed, model.functions) {
   # do we require any libraries
   if(!is.null(model.functions$libraries)) {
@@ -272,8 +292,24 @@ model_run.bayesian = function(chain.id, formula.parsed, model.functions) {
   return(r)
 }
 
-# run -- replicates is a list of observations in data to run on, boot_function is what is run, should return NULL for a bad run
+#' Run all replicates
+#'
+#' This function makes it easy to run an arbitrary function in parallel.
+#'
+#' @param replicates A list that contains a value to be passed to the 'boot_function' for each run.
+#' @param boot_function An arbitrary function that is run once for each item in the 'replicates' list.
+#'   The value in each list item in 'replicates' is passed as the first value to 'boot_function'.
+#' @param N The number of runs to do, which defaults to the length of 'replicates'.
+#' @param args Additional values to pass to 'boot_function'.
+#' @param max.threads The maximum number of threads to use. Will attempt to use the smaller of 75% of available
+#'   threads or 'max.threads'.
+#' @param parallel.libraries A list of libraries that are loaded for each thread.
+#' @keywords bootstrap resample
+#' @export
+#'
 run_all_replicates = function(replicates, boot_function, N = length(replicates), args = NULL, max.threads = 20, parallel.libraries = NULL) {
+  # run -- replicates is a list of observations in data to run on, boot_function is what is run, should return NULL for a bad run
+
   # makes sure replicates is a list
   if(!is.list(replicates)) {
     stop("Replicates must be a list of data frames.")
@@ -372,7 +408,13 @@ run_all_replicates = function(replicates, boot_function, N = length(replicates),
   return(list(result = out, time = time))
 }
 
-# create stan fit object
+#' Create 'stanfit' object.
+#'
+#' This internal function is in progress.
+#'
+#' @param model The model.
+#' @return Return a 'stanfit' s4 object.
+#'
 create_stan_fit = function() {
   # set stuff
   model.name = "glm"
@@ -425,7 +467,15 @@ create_stan_fit = function() {
   return(boot.fit)
 }
 
-# create a stan summary object
+#' Create a stan summary for summary/print output.
+#'
+#' This internal function takes the full bootstrap return matrix/names and outputs a formatted stan
+#' summary.
+#'
+#' @param full.matrix A matrix with all variables and values for each bootstrap run.
+#' @param full.names The list of names that correspond to columns in 'full.matrix'.
+#' @return A formatted summary matrix for display.
+#'
 create_stan_summary = function(full.matrix, full.names) {
   # create a long version
   summary.long = tidyr::pivot_longer(tibble::as_tibble(full.matrix[, c(full.names$alpha, full.names$beta, full.names$aux, full.names$mean_PPD, full.names$lp_)]), dplyr::everything())
@@ -463,7 +513,19 @@ create_stan_summary = function(full.matrix, full.names) {
   return(summary.long)
 }
 
-# create model string summary
+#' Create a string describing a model run.
+#'
+#' This internal function takes information about the model being run and turns it into a
+#' well formatted string.
+#'
+#' @param model.type The type of model being run.
+#' @param formula.parsed The parsed formula object.
+#' @param cluster The clusters used to produce the bootstrap test data.
+#' @param weights The weights used to produce the bootstrap test data.
+#' @param inference Whether the model will be run using frequentist or Bayesian inference.
+#' @param has.tve Whether the event history model has time-varying hazards.
+#' @return A formatted string that describes the model being run.
+#'
 create_model_string = function(model.type, formula.parsed, cluster, weights, inference, has.tve) {
   # create model string
   model.string = dplyr::case_when(
@@ -498,12 +560,6 @@ create_model_string = function(model.type, formula.parsed, cluster, weights, inf
   return(return.string)
 }
 
-# basic logic:
-# create N dataframes that incorporate weights and clusters (accounts for effect of weights and clusters)
-# run the model N times on all dataframes and save the cleaned model object
-# run prediction and contrast on base data for each model run
-# return results
-
 #' Main entry function to conduct analysis of a dataset.
 #'
 #' This function runs either a frequentist or bayesian analysis of a dataset.
@@ -520,8 +576,13 @@ create_model_string = function(model.type, formula.parsed, cluster, weights, inf
 #' @examples
 #' analysis(runs = 1000, formula = out ~ treat, data = dt, inference = "bayesian")
 #'
-
 analysis = function(runs, formula, main.ivs = NULL, data, cluster = NULL, weights = NULL, model.type = NULL, model.extra.args = NULL, inference = c("frequentist", "bayesian")) {
+  # basic logic:
+  # create N dataframes that incorporate weights and clusters (accounts for effect of weights and clusters)
+  # run the model N times on all dataframes and save the cleaned model object
+  # run prediction and contrast on base data for each model run
+  # return results
+
   # need to add some error checking -- e.g., adding priors to non-bayesian analysis, etc.
 
   # select only relevant variables from data -- need to also include weights since we might have different row length after sub-setting
@@ -586,6 +647,7 @@ analysis = function(runs, formula, main.ivs = NULL, data, cluster = NULL, weight
     model.functions$model.args$chains = 1
     # model.functions$model.args$chains = model.functions$model.args$cores
     # model.functions$model.args$iter = runs
+    model.functions$model.args$weights = weights
 
     # run multi-core
     out = run_all_replicates(
@@ -744,339 +806,4 @@ analysis = function(runs, formula, main.ivs = NULL, data, cluster = NULL, weight
 }
 
 
-# function to analyze a full research plan automatically
 
-#' Function to automatically analyze a research plan in a systematic and efficient manner.
-#'
-#' @export
-#'
-analyze_plan = function(research.plan, outcomes, .threshold = 0.3, only.run = NULL, run.basic = T, run.mediation = T, run.interaction = T) {
-  # first check to make sure research.plan is correctly formatted
-  if(!is.list(research.plan) | !rlang::has_name(research.plan, "formulas") | !rlang::has_name(research.plan, "data") | !rlang::has_name(research.plan, "variables")) {
-    stop("The research plan does not have the correct fields please check to make sure the variable is correct.")
-  }
-
-  # get list of main variables to run
-  main.variables = names(research.plan$formulas)
-
-  # subset to only run
-  if(!is.null(only.run)) {
-    main.variables = main.variables[main.variables %in% only.run]
-  }
-
-  # make sure we still have variables to run
-  if(is.null(main.variables) || length(main.variables) < 1) {
-    stop("No variables in research pla nto run analysis on.")
-  }
-
-  # console output
-  cat(paste0("\n\n** Running research plan with -- ", length(main.variables), " -- variable(s).\n"))
-
-  # loop structure is outcome --> main variable (basic, interaction, mediation)
-
-  # loop through variables
-  all.variables = lapply(main.variables, function(variable) {
-    # for each outcome, loop through the variables and run the main, interaction, and mediator
-
-    # set data
-    temp.data = research.plan$data
-
-    # console output
-    cat(paste0("\n** Identifying correlates of -- ", variable, ".\n"))
-
-    # add random/fixed effects if needed
-    if(!is.null(research.plan$effects)) {
-      formula.effects = lasso2:::merge.formula(formula_iv_as_dv(research.plan$formulas[[variable]]$main), research.plan$effects)
-    } else {
-      formula.effects = formula_iv_as_dv(research.plan$formulas[[variable]]$main)
-    }
-
-    # get the list of variables to drop for our main effect
-    main.drop = trim_formula(formula = formula.effects, data = temp.data, cluster = research.plan$cluster, threshold = .threshold)
-
-    # loop through variables
-    r.outcome = lapply(names(outcomes), function(dv) {
-      # console output
-      cat(paste0("\n** Working on outcome -- ", dv, ".\n"))
-
-      # set outcome
-      temp.data$.outcome = outcomes[[dv]]
-
-      # run main models if needed
-      if(run.basic) {
-        # console output
-        cat(paste0("\n** Running main model -- ", variable, ".\n"))
-
-        # add the outcome to our formula so we now have a testable formula
-        new.formula = lasso2:::merge.formula(update(formula(research.plan$formulas[[variable]]$main, to.drop = main.drop$dropped), research.plan$outcome), research.plan$effects)
-
-        # analyze our formula and data
-        analysis = NULL
-        try(analysis <- analysis(
-          runs = 500,
-          formula = new.formula,
-          main.ivs = variable,
-          data = temp.data,
-          inference = "bayesian",
-          model.extra.args = list(prior = rstanarm::normal(0, 1), prior_intercept = rstanarm::normal(0, 1), adapt_delta = 0.9, warmup = 250, iter = 500)
-        ), T)
-
-        if(!is.null(analysis)) {
-          # create prediction for treatment
-          prediction = pr_list(!!variable := create_values(temp.data[[variable]]))
-
-          # set times -- this needs to be fixed so that it is not hard coded
-          times = unique(quantile(temp.data$.time.end, seq(1, 9, by = 2) / 10, na.rm = T))
-
-          # get results
-          results = results(object = analysis, predictions = prediction, draws = 500, times = times)
-
-          # save -- double list so it is easier to use purrr
-          r.main = list(list(variable = variable, model = analysis, coefficients = results$coefficients, predictions = results$predictions, contrasts = results$contrasts))
-        } else {
-          r.main = list(list(variable = variable, model = NULL, coefficients = NULL, predictions = NULL, contrasts = NULL))
-        }
-      } else {
-        r.main = NULL
-      }
-
-      # now run the interaction
-      if(run.interaction) {
-        # get list of interaction variables to run
-        interaction.variables = names(research.plan$formulas[[variable]]$interaction)
-
-        # loop through interaction variables
-        r.interaction = lapply(interaction.variables, function(interaction) {
-          # make sure the interaction is not the same as the main variable
-          if(interaction == variable) {
-            return(NULL)
-          }
-
-          # console output
-          cat(paste0("\n** Running interaction -- ", variable, " X ", interaction, ".\n"))
-
-          # trim the formula -- now we just have variables that correlate with our treatment -- should also make it work for multiple variables
-          new.formula = lasso2:::merge.formula(update(formula(research.plan$formulas[[variable]]$interaction[[interaction]], to.drop = main.drop$dropped), research.plan$outcome), research.plan$effects)
-
-          # analyze our formula and data
-          analysis = NULL
-          try(analysis <- analysis(
-            runs = 500,
-            formula = new.formula,
-            main.ivs = variable,
-            data = temp.data,
-            inference = "bayesian",
-            model.extra.args = list(prior = rstanarm::normal(0, 1), prior_intercept = rstanarm::normal(0, 1), adapt_delta = 0.9, warmup = 250, iter = 500)
-          ), T)
-
-          # save if possible
-          if(!is.null(analysis)) {
-            # create prediction for treatment
-            prediction = pr_list(!!variable := create_values(temp.data[[variable]]), !!interaction := create_values(temp.data[[interaction]]), .constant = interaction)
-
-            # set times
-            times = unique(quantile(temp.data$.time.end, seq(1, 9, by = 2) / 10, na.rm = T))
-
-            # get results
-            results = results(object = analysis, predictions = prediction, draws = 500, times = times)
-
-            # save
-            r = list(variable = variable, interaction = interaction, model = analysis, coefficients = results$coefficients, predictions = results$predictions, contrasts = results$contrasts)
-          } else {
-            r = list(variable = variable, interaction = interaction, model = NULL, coefficients = NULL, predictions = NULL, contrasts = NULL)
-          }
-
-          # return
-          return(r)
-        })
-      } else {
-        r.interaction = NULL
-      }
-
-      # now run the mediation if we have any significant effects
-      if(run.mediation && is.list(r.main) && (is.null(r.main[[1]]$contrasts) || any(r.main[[1]]$contrasts$p.value < 0.1))) {
-        # get list of interaction variables to run
-        mediation.variables = names(research.plan$formulas[[variable]]$mediation)
-
-        # loop through mediation variables
-        r.mediation = lapply(mediation.variables, function(mediation) {
-          # make sure the interaction is not the same as the main variable
-          if(mediation == variable) {
-            return(NULL)
-          }
-
-          # need to deal with both formulas in turn -- first mediator then outcome
-
-          # console output
-          cat(paste0("\n** Running mediator -- ", variable, " -> ", mediation, ".\n"))
-
-          # mediator formula
-          new.formula.med = lasso2:::merge.formula(formula(research.plan$formulas[[variable]]$mediation[[mediation]]$mediator, to.drop = main.drop$dropped), research.plan$effects)
-
-          # don't check thee mediator too -- just check the treatment for now
-          new.formula.out = lasso2:::merge.formula(update(formula(research.plan$formulas[[variable]]$mediation[[mediation]]$outcome, to.drop = main.drop$dropped), research.plan$outcome), research.plan$effects)
-
-          # first part of mediation
-          analysis.med = NULL
-          try(analysis.med <- analysis(
-            runs = 500,
-            formula = new.formula.med,
-            main.ivs = variable,
-            data = temp.data,
-            inference = "bayesian",
-            model.extra.args = list(prior = rstanarm::normal(0, 1), prior_intercept = rstanarm::normal(0, 1), adapt_delta = 0.9, warmup = 250, iter = 500)
-          ), T)
-
-          # second part of mediation
-          analysis.out = NULL
-          try(analysis.out <- analysis(
-            runs = 500,
-            formula = new.formula.out,
-            main.ivs = variable,
-            data = temp.data,
-            inference = "bayesian",
-            model.extra.args = list(prior = rstanarm::normal(0, 1), prior_intercept = rstanarm::normal(0, 1), adapt_delta = 0.9, warmup = 250, iter = 500)
-          ), T)
-
-
-          if(!is.null(analysis.med) & !is.null(analysis.out)) {
-            # create prediction for treatment
-            prediction = pr_list(!!variable := create_values(temp.data[[variable]]))
-
-            # set times -- this needs to be fixed so that it is not hard coded
-            times = unique(quantile(temp.data$.time.end, seq(1, 9, by = 2) / 10, na.rm = T))
-
-            # get mediation results
-            results = results_mediation(m.mediator = analysis.med, m.outcome = analysis.out, predictions = prediction, times = as.integer(median(times)), .outcome = dv)
-
-            # save
-            r = list(variable = variable, mediation = mediation, model.med = analysis.med, model.out = analysis.out, contrasts = results)
-          } else {
-            r = list(variable = variable, mediation = mediation, model.med = NULL, model.out = NULL, contrasts = NULL)
-          }
-
-          # return
-          return(r)
-        })
-      } else {
-        r.mediation = NULL
-      }
-
-      # remove nulls from results
-      r.main[sapply(r.main, is.null)] = NULL
-      r.interaction[sapply(r.interaction, is.null)] = NULL
-      r.mediation[sapply(r.mediation, is.null)] = NULL
-
-      # set the names
-      if(!is.null(r.main)) { n = purrr::map_chr(r.main, "variable"); if(!is.null(n)) names(r.main) = n }
-      if(!is.null(r.interaction)) { n = purrr::map_chr(r.interaction, "interaction"); if(!is.null(n)) names(r.interaction) = n }
-      if(!is.null(r.mediation)) { n = purrr::map_chr(r.mediation, "mediation"); if(!is.null(n)) names(r.mediation) = n }
-
-      # data to return
-      r = list(variable = variable, outcome = dv, main = r.main, interaction = r.interaction, mediation = r.mediation)
-
-      # return
-      return(r)
-    })
-
-    # set the names
-    if(rlang::has_name(r.outcome, "outcome")) {
-      r.outcome = list(r.outcome)
-    }
-    names(r.outcome) = purrr::map_chr(r.outcome, "outcome")
-
-    # add coefficients and predictions
-
-    # get the main coefficients
-    f.main.coefficients = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
-      if(!is.null(r.outcome[[x]]$main)) {
-        df = purrr::map_dfr(r.outcome[[x]]$main, "coefficients", .id = ".main.variable")
-        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
-      } else {
-        return(NULL)
-      }
-    }))
-
-    # get the main predictions
-    f.main.predictions = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
-      if(!is.null(r.outcome[[x]]$main)) {
-        df = purrr::map_dfr(r.outcome[[x]]$main, "predictions", .id = ".main.variable")
-        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
-      } else {
-        return(NULL)
-      }
-    }))
-
-    # get the main effects
-    f.main.contrasts = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
-      if(!is.null(r.outcome[[x]]$main)) {
-        df = purrr::map_dfr(r.outcome[[x]]$main, "contrasts", .id = ".main.variable")
-        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
-      } else {
-        return(NULL)
-      }
-    }))
-
-    # get the interaction coefficients -- the main variable is not named correctly -- fix!!!
-    f.interaction.coefficients = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
-      if(!is.null(r.outcome[[x]]$interaction)) {
-        df = dplyr::mutate(purrr::map_dfr(r.outcome[[x]]$interaction, "coefficients", .id = ".main.interaction"), .main.variable = x, .before = ".main.interaction")
-        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
-      } else {
-        return(NULL)
-      }
-    }))
-
-    # get the interaction predictions
-    f.interaction.predictions = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
-      if(!is.null(r.outcome[[x]]$interaction)) {
-        df = dplyr::mutate(purrr::map_dfr(r.outcome[[x]]$interaction, "predictions", .id = ".main.interaction"), .main.variable = x, .before = ".main.interaction")
-        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
-      } else {
-        return(NULL)
-      }
-    }))
-
-    # get the interaction contrasts
-    f.interaction.contrasts = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
-      if(!is.null(r.outcome[[x]]$interaction)) {
-        df = dplyr::mutate(purrr::map_dfr(r.outcome[[x]]$interaction, "contrasts", .id = ".main.interaction"), .main.variable = x, .before = ".main.interaction")
-        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
-      } else {
-        return(NULL)
-      }
-    }))
-
-    # get the mediation
-    f.mediation.contrasts = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
-      if(!is.null(r.outcome[[x]]$mediation)) {
-        df = dplyr::mutate(purrr::map_dfr(r.outcome[[x]]$mediation, "contrasts", .id = ".main.mediation"), .main.variable = x, .before = ".main.mediation")
-        df = dplyr::mutate(df, .outcome = x, .before = ".main.variable")
-      } else {
-        return(NULL)
-      }
-    }))
-
-    # the full results for an outcome
-    r = list(variable = variable,
-             main.coefficients = f.main.coefficients, main.predictions = f.main.predictions, main.contrasts = f.main.contrasts,
-             interaction.coefficients = f.interaction.coefficients, interaction.predictions = f.interaction.predictions, interaction.contrasts = f.interaction.contrasts,
-             mediation.contrasts = f.mediation.contrasts)
-
-    # return
-    return(r)
-  })
-
-  # set names
-  if(length(all.variables) > 0) {
-    if(rlang::has_name(all.variables, "variable")) {
-      all.variables = list(all.variables)
-    }
-    names(all.variables) = purrr::map_chr(all.variables, "variable")
-  } else {
-    all.variables = NULL
-  }
-
-  # final return
-  return(all.variables)
-}

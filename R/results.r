@@ -1,10 +1,10 @@
 # functions to get results from analysis
 
-# summary stats
-
 #' Function to get summary statistics from a dataframe.
 #'
 #' This function produces a table of summary statistics based on a formula and a dataframe.
+#'
+#' @family post analysis exploration
 #' @param formula.list A formula or list of formulas that indicate which variables are included in summary statistics.
 #' @param data Dataframe with variables to produce summary statistics from.
 #' @param labels An optional vector of labels: c("variable" = "label).
@@ -14,7 +14,6 @@
 #' @examples
 #' get_summary_statistics(formula.list = ~ variable, data = df, labels = c("variable" = "label"))
 #'
-
 get_summary_statistics = function(formula.list, data, labels = NULL) {
   # process formula
   f = lapply(formula.list, function(x) delete.response(terms(lme4:::nobars(x))))
@@ -58,13 +57,29 @@ get_summary_statistics = function(formula.list, data, labels = NULL) {
   return(d.mm)
 }
 
-# function to get predictions for assessing variable effects
-
-#' Create predictions for all variables in a formula.
+#' Create predicitons for all variables in a formula
 #'
-#' @export
+#' This function generates a list of predictions based on the data for all variables in the 'variables' formula. This is an
+#' alternative to showing coefficient estimates. Coefficient estimates can be hard to interpret or compare. This function
+#' produces standardized effect estimates for all variables.
+#'
+#' For character (factor) variables, all unique values of the variable are compared against each other. For numeric variables, the
+#' impact of moving from the 10th to the 90th percentile is estimated.
+#'
+#' @family post analysis exploration
+#' @param variables A formula or list of formulas that indicate which variables are included in summary statistics.
+#' @param data Dataframe with variables to produce summary statistics from.
+#' @param labels An optional vector of labels: c("variable" = "label).
+#' @param .variable.set An optional subset of variables to examine.
+#' @param .perc For numeric variables this sets the low and high quantile values. The default is to examine the
+#'   effect of moving from the 10th percentile (0.1) to the 90th percentile (0.9).
+#' @return A dataframe that shows the impact of all variables (median, confidence interval, and P-value). If labels
+#'   are provided this dataframe will also contain the labels.
+#' @keywords coefficients, summary, effects
 #'
 get_variable_effects = function(variables, data, labels = NULL, .variable.set = NULL, .perc = c(0.1, 0.9)) {
+  # function to get predictions for assessing variable effects
+
   # can accept either a formula or a vector
   if(rlang::is_formula(variables)) {
     # process formula
@@ -147,23 +162,207 @@ get_variable_effects = function(variables, data, labels = NULL, .variable.set = 
   return(r)
 }
 
+# function to identify observations in our data that match our results
 
-# summarize interval -- could use HDI -- should be equivalent to http://mc-stan.org/rstanarm/reference/posterior_interval.stanreg.html
+#' Identify observations that support our results.
+#'
+#' This functions takes a set of results (main and interaction but not mediation) and identifies observations
+#' in the dataset used that support the results. Supportive observations are only identified for statistically
+#' significant results.
+#'
+#' For most normal regression models, an observation is supportive when (1) it occurs in the same unit of analysis
+#' as a positive outcome and (2) the variable has a high value. For interactions, both the main variable and the interaction
+#' need to have the specified values (conditional effects can occur when the interaction variable has a low value--this is
+#' accounted for). For event history models, a supportive variable does not need to occur in the same observation as the outcome.
+#' Observations that are close in time to the outcome are also considered supportive.
+#'
+#'
+#' @family post analysis exploration
+#' @param results The output from 'analyze_plan'.
+#' @param research.plan The research plan used in the produce of 'results'.
+#' @param unit The unit of analysis to aggregate examples within.
+#' @param time The tine variable used in the results. Only necessary for time-series analysis.
+#' @param .time.distance If a results was from a survival model, this parameter identifies the quantile
+#'   of time that indicates a "close" event. If time to the outcome is below this quantile of the time
+#'   variable, the observation is considered close.
+#' @param .quantile The quantile cutoffs for low and high values of a variable. A value above the first
+#'   cutoff is considered a "high" value while a value below the second cutoff is considered a "low' value.
+#' @param .variables Names of the variable columns in the results. Defaults to main and interaction effects.
+#'   If results contains more than two variables, additional values need to be added here.
+#' @return Function returns a dataframe that contains a supportive observation that matches one of the statistically
+#'   significant results.
+#' @export
+#'
+identify_examples = function(results, research.plan, unit = NULL, time = NULL, .time.distance = 0.1, .quantile = c(0.8, 0.2), .variables = c(".main.variable", ".main.interaction")) {
+  # basic logic is to find observations in the data where the outcome occurs and our main variable has a higher value
+  # TODO: make this work for non numeric variables -- use a generic function that makes predictions for variables from danalyze
+  # the results could include the reseaarch plan -- this might make sense since the plan was used for the results
+
+  # vars to group by
+  .variables = .variables[.variables %in% colnames(results)]
+  var.to.group = c(".outcome", .variables)
+  var.to.group = var.to.group[var.to.group %in% colnames(results)]
+  results$.id = 1:nrow(results)
+
+  # need to identify high and low values
+  var.value.labels = dplyr::group_map(dplyr::group_by_at(results, var.to.group), ~ {
+    r = sapply(1:length(.variables), function(x) {
+      v = paste0("v", x, ".high")
+      dplyr::if_else(.x[[v]] >= max(.x[[v]], na.rm = T), "High", "Low")
+    })
+    r = matrix(r, ncol = length(.variables))
+    colnames(r) = paste0(.variables, ".status")
+    r = tibble::as_tibble(r)
+    r$.id = .x$.id
+    r
+  }, .keep = T)
+
+  # bind
+  var.value.labels = dplyr::bind_rows(var.value.labels)
+
+  # add to results
+  results = dplyr::left_join(dplyr::ungroup(results), var.value.labels, by = ".id")
+
+  # identify significant results that we want to identify cases for
+  results = dplyr::summarize(dplyr::group_by_at(dplyr::ungroup(results), c(var.to.group, colnames(dplyr::select(var.value.labels, -.id)))),
+                             coefficient = mean(c, na.rm = T),
+                             direction = dplyr::if_else(coefficient < 0, "negative", "positive"),
+                             is.significant = dplyr::if_else(any(p.value < 0.05), 1, 0),
+                             .groups = "keep")
+
+  # filter
+  results = dplyr::filter(results, is.significant == 1)
+
+  # set data
+  data = research.plan$data
+
+  # arrange data
+  data = dplyr::arrange(data, dplyr::across(tidyselect::any_of(c(unit, time))))
+
+  # loop through results and find plausible supportive observations
+  r = lapply(1:nrow(results), function(i) {
+    # we may not have all the variables so subset
+    .variables.t = .variables[sapply(.variables, function(x) !is.na(results[i, x]))]
+
+    # values
+    var.values = lapply(.variables.t, function(x) {
+      danalyze:::create_values(data[[results[[i, x]]]], .quantile = .quantile)[if(results[i, paste0(x, ".status")] == "High") 1 else 2]
+    })
+    names(var.values) = .variables.t
+
+    # need to deal with character values
+
+    # identify low and high values of our variable
+    variable.high = sapply(names(var.values), function(x) {
+      if(results[i, paste0(x, ".status")] == "High") {
+        dplyr::if_else(data[[results[[i, x]]]] >= var.values[[x]], T, F)
+      } else {
+        dplyr::if_else(data[[results[[i, x]]]] <= var.values[[x]], T, F)
+      }
+    })
+    variable.high = rowSums(variable.high, na.rm = T) == ncol(variable.high)
+
+    # identify observations where the outcome occurred
+    outcome.occur = dplyr::if_else(research.plan$outcome.occurrence[[results$.outcome[i]]] == T, T, F)
+
+    # set "near to end"
+    if(!is.null(time)) {
+      # identify outcome periods
+
+      # create data with time and outcome stuff
+      data.t = dplyr::select_at(data, c(unit, time))
+      data.t$.outcome = outcome.occur
+      data.t$.period = cumsum(data.t$.outcome)
+
+      # first create time to outcome
+      outcome.near = unlist(dplyr::group_map(dplyr::group_by_at(data.t, c(unit, ".period")), ~ {
+        max(.x[[time]], na.rm = T) - .x[[time]]
+      }))
+
+      # set in data.t so we can see
+      data.t$.near = outcome.near
+
+      # identify observations that are near (or far if the effect is negative) to the outcome
+      if(results$direction[i] == "negative") {
+        outcome.near = dplyr::if_else(outcome.near >= quantile(outcome.near, 1 - .time.distance, na.rm = T), T, F)
+      } else {
+        outcome.near = dplyr::if_else(outcome.near <= quantile(outcome.near, .time.distance, na.rm = T), T, F)
+      }
+    } else {
+      # identify outcomes (or not outcomes if effect is negative)
+      if(results$direction[i] == "negative") {
+        outcome.near = !outcome.near
+      } else {
+        outcome.near = outcome.occur
+      }
+    }
+
+    # values to pull
+    obs.to.keep = variable.high & outcome.near
+
+    # not all observations are always present so drop nas
+    obs.to.keep = obs.to.keep & !is.na(obs.to.keep)
+
+    # do we have any
+    if(all(obs.to.keep == F)) {
+      return(NULL)
+    }
+
+    # find plausible observations
+    support = data[obs.to.keep, ]
+
+    # select columns
+    support = dplyr::select(support, tidyselect::any_of(c(unit, time)))
+
+    # set the variable name
+    variables.name = plan$variables$label$var.label[match(results[i, .variables.t], plan$variables$label$var.name)]
+
+    # combine variable into a name
+    variable.label = paste0(variables.name, " (", results[i, paste0(.variables.t, ".status")], ")")
+
+    # set additional values
+    support$variable.checked = paste(variable.label, collapse = " + ")
+    support$outcome = paste0(results$.outcome[i], " (", results$direction[i], ")")
+    support$time = support[[time]]
+
+    # return
+    return(support)
+  })
+
+  # bind
+  r = dplyr::bind_rows(r)
+
+  # now summarize by our grouping vars
+  r = dplyr::summarize(dplyr::group_by_at(r, c(unit, "outcome")),
+                       time = paste(unique(time), collapse = ", "),
+                       variable.checked = paste(unique(variable.checked), collapse = ", "),
+                       num.obs = dplyr::n(),
+                       .groups = "keep")
+
+  # return
+  return(r)
+}
 
 #' Function to summarize a dataframe and produce confidence intervals.
 #'
-#' This function summarizes predictions to create confidence intervals.
+#' This function summarizes predictions to create confidence intervals. This works for both the results of
+#' a bootstrap and the posterior distribution of a Bayesian analysis.
+#'
+#' @family results
 #' @param data Dataframe with variables to be summarized.
 #' @param .ci Confidence interval. Defaults to 95 percent, which is the 2.5th to the 97.5th percentile of the distribution.
 #' @param .grouping Variables that are excluded from the group and summarize. The variable "prob" should contain the estimates.
 #' @param .round The number of digits to round the results to. Can be set to 'NULL' to prevent rounding.
+#' @return A dataframe that contains the variable name, the median value, the lower confidence interval, the upper confidence
+#'   interval, the simulated P-value, and the number of "draws" used to produce the confidence interval.
 #' @keywords prediction confidence_interval ci summarize
 #' @export
 #' @examples
 #' summarize_interval(results)
 #'
-
 summarize_interval = function(data, .ci = 0.95, .grouping = c(".prediction.id", "prob"), .round = 3) {
+  # summarize interval -- could use HDI -- should be equivalent to http://mc-stan.org/rstanarm/reference/posterior_interval.stanreg.html
+
   # set return
   r = data
 
@@ -183,7 +382,7 @@ summarize_interval = function(data, .ci = 0.95, .grouping = c(".prediction.id", 
   r = dplyr::summarize(
     r,
     q = NA, #list(hdi(prob, .ci)),
-    c = mean(prob),
+    c = median(prob),
     c.low = quantile(prob, (1 - .ci) / 2), # q[[1]][1], # quantile(prob, (1 - .ci) / 2),
     c.high = quantile(prob, 1 - ((1 - .ci) / 2)), # q[[1]][2], # quantile(prob, 1 - ((1 - .ci) / 2)),
     p.value = min(dplyr::if_else(c < 0, 1 - ecdf(prob)(0), ecdf(prob)(0)) * 2, 1),
@@ -206,9 +405,21 @@ summarize_interval = function(data, .ci = 0.95, .grouping = c(".prediction.id", 
   return(r)
 }
 
-# internal function
-# structure predictions to make it easy to run one predict with observed values with factors and nicely setup contrasts
+
+#' Structure predictions to make testing easier.
+#'
+#' This function structures data for testing a prediction. Deals with predictions that are a matrix for mediation analysis. Also
+#' properly format factor variables.
+#'
+#' @family internal functions
+#' @param formula The formula used to identify all variables that are in the model that will be run.
+#' @param data The data used to create predictions.
+#' @param predictions The predictions to test. This should be the object returned from 'pr_list'.
+#' @param method A string indicating how variables not in 'predictions' should be treated. There are two options; "observed values" and "mean."
+#' @return A dataframe
+#'
 structure_predictions = function(formula, data, predictions, method) {
+  # internal function to make it easy to run one predict with observed values with factors and nicely setup contrasts
 
   ## GET DATA TO USE
 
@@ -393,8 +604,18 @@ structure_predictions = function(formula, data, predictions, method) {
   return(list(predictions = prediction.frame, contrasts = contrast.frame, data = data.prediction))
 }
 
-# internal function to get draws (model results) for each run
+#' Get draws from a frequentist or Bayesian object.
+#'
+#' This function selects the draws dataframe from a model object produced by 'analyze'. This function also
+#' works on model objects produced by 'rstanarm', e.g., from a run of 'stan_glm'.
+#'
+#' @family internal functions
+#' @param object The model object.
+#' @return The dataframe containing all of the draws (model runs).
+#'
 get_draws = function(object) {
+  # internal function to get draws (model results) for each run
+
   # get the values for each coefficient draw
   if(is.list(object)) {
     if(rlang::has_name(object, "stanfit")) {
@@ -421,8 +642,18 @@ get_draws = function(object) {
   return(draws)
 }
 
-# internal function to get formula from object
+#' Get formula from a frequentist or Bayesian object.
+#'
+#' This function selects the formula from a model object produced by 'analyze'. This function also
+#' works on model objects produced by 'rstanarm', e.g., from a run of 'stan_glm'.
+#'
+#' @family internal functions
+#' @param object The model object.
+#' @return The formula used in the model.
+#'
 get_formula = function(object) {
+  # internal function to get formula from object
+
   # check
   if(is.null(object) || typeof(object) != "list" || !rlang::has_name(object, "formula")) {
     return(NULL)
@@ -445,8 +676,18 @@ get_formula = function(object) {
   return(obj.formula)
 }
 
-# internal function to get data from object
+#' Get data from a frequentist or Bayesian object.
+#'
+#' This function selects the data from a model object produced by 'analyze'. This function also
+#' works on model objects produced by 'rstanarm', e.g., from a run of 'stan_glm'.
+#'
+#' @family internal functions
+#' @param object The model object.
+#' @return The data used in the model.
+#'
 get_data = function(object, data = NULL) {
+  # internal function to get data from object
+
   # check
   if(is.null(object) || typeof(object) != "list" || !rlang::has_name(object, "data")) {
     return(data)
@@ -456,9 +697,24 @@ get_data = function(object, data = NULL) {
   return(object$data)
 }
 
-# internal function to process and return coefficients
-# TODO: make it get the time-varying coefficients as well
+#' Produce coefficients from a frequentist or Bayesian object.
+#'
+#' This function takes the draws result from a model and produces a coefficient table with confidence
+#' intervals and P-values.
+#'
+#' @family internal functions
+#' @param obj.formula The formula used in the model. A return from 'get_formula'.
+#' @param obj.draws The draws produced from the model. A return from 'get_draws'.
+#' @param obj.data The data used in the model. A return from 'get_data'.
+#' @param times An optional vector identifying the times to produce coefficients for. Only relevant for
+#'   survival models.
+#' @return The coefficient table.
+#'
 results_coefficients = function(obj.formula, obj.draws, obj.data, times = NULL) {
+  # internal function to process and return coefficients
+
+  # TODO: make it get the time-varying coefficients as well
+
   # delete response to make it easier to work with -- especially with more complicated brms formulas
   obj.formula = formula(delete.response(obj.formula))
 
@@ -484,8 +740,25 @@ results_coefficients = function(obj.formula, obj.draws, obj.data, times = NULL) 
   return(coefs)
 }
 
-# internal function to process and return predictions
+#' Produce predictions from a frequentist or Bayesian object.
+#'
+#' This function takes the draws result from a model and produces a prediction table with confidence
+#' intervals and P-values based on structured predictions.
+#'
+#' @family internal functions
+#' @param object The model object.
+#' @param pr The structured predictions. A return from 'structure_predictions'.
+#' @param obj.draws The draws produced from the model. A return from 'get_draws'.
+#' @param method A string indicating how variables not in 'predictions' should be treated. There are two options; "observed values" and "mean."
+#' @param times An optional vector identifying the times to produce coefficients for. Only relevant for
+#'   survival models.
+#' @param m The model to get results for. Only relevated for a multivariate Bayesian model (a model with
+#'   multiple dependent variables).
+#' @return The predictions table.
+#'
 results_predictions = function(object, pr, obj.draws, method = c("observed values", "mean"), draws = 1000, times = NULL, m = NULL) {
+  # internal function to process and return predictions
+
   # do we have predictions
   if(is.null(pr)) {
     return(NULL)
@@ -677,8 +950,26 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
   return(predict.df)
 }
 
-# internal function to process and return contrasts
+#' Produce contrasts from a frequentist or Bayesian object.
+#'
+#' This function takes the draws result from a model and produces a contrast table with confidence
+#' intervals and P-values based on structured predictions. Contrasts are comparisons between
+#' predictions.
+#'
+#' Supports a two-way and a four-way comparison. A two-way comparison compares two different predictions
+#' while a four-way comparison compares the difference between two two-way comparisons. For instance, identifying
+#' a treatment effect is a two-way comparison (high vs. low value). Comparing the treatment effect in two different
+#' situations is a four way comparison (high vs. low in situation one compared to high vs. low in situation two).
+#'
+#'
+#' @family internal functions
+#' @param pr The structured predictions. A return from 'structure_predictions'.
+#' @param predict.df The predictions produced from the model. A return from 'results_predictions'.
+#' @return The contrasts table.
+#'
 results_contrasts = function(pr, predict.df) {
+  # internal function to process and return contrasts
+
   # check if we have contrasts
   if(is.null(pr) | is.null(predict.df)) {
     return(NULL)
@@ -724,22 +1015,27 @@ results_contrasts = function(pr, predict.df) {
   return(contrast.df)
 }
 
-# function to get predictions from an "out" object produced by analyze
-
 #' Function to get results from an object returned by analysis.
 #'
-#' This function allows you to get results from an analysis.
+#' This function allows you to get results based on specified predictions from the return object produced by the
+#' 'analyze' function. Results are produced on the scale of the response variable.
+#'
+#' Predictions estimate the value of the response variable when one or more independent variables is set to a desired
+#' value (as indicated by 'predictions'). Contrasts compare two or more predictions.
+#'
+#' @family results
 #' @param object Object returned from 'analysis' function.
 #' @param predictions The predictions returned from "pr_list."
 #' @param method Method for producing predictions Either uses observed values (the default) or mean values.
 #' @param times Vector of times to produce predictions for. Only used for survival analysis.
 #' @param .full.matrix Whether to return structured predictions (the default) or the full matrix.
+#' @return A list with coefficient values, predictions, and contrasts. If '.full.matrix' is set, the unsummarized matrix
+#'   for both predictions and contrasts is returned as well.
 #' @keywords bootstrap results prediction
 #' @export
 #' @examples
 #' results(object = output, predictions = main.predictions)
 #'
-
 results = function(object, predictions = NULL, method = c("observed values", "mean"), times = NULL, draws = 1000, .full.matrix = F) {
   ## get needed variables
 
@@ -907,26 +1203,35 @@ results = function(object, predictions = NULL, method = c("observed values", "me
   return(r)
 }
 
-
-# mediation analysis using posterior distributions
-# the name of the mediator in m.med should be the same as in m.out + predictions should be in both -- add checks
-# needs a non-survival model upfront but can work with anything at the back
-# based on: https://imai.fas.harvard.edu/research/files/BaronKenny.pdf + https://imai.fas.harvard.edu/research/files/mediationP.pdf
-
-#' Function to run a mediation analysis.
+#' Function to run mediation analysis.
 #'
-#' This function allows you to run mediation analysis based on two sets of returns from the 'analysis' function.
+#' This function allows you to run mediation analysis based on two sets of returns from the 'analysis' function. The dependent variable
+#' from 'm.mediator' must be present as an independent variable in 'm.outcome.' Transformations in the outcome model are allowed but transformations
+#' in the mediator are not.
+#'
+#' All estimated effects are on the scale of the response variable.
+#'
+#' @family results
 #' @param m.mediator Object returned from 'analysis' function that identifies the effect of the treatment on the mediator.
 #' @param m.outcome Object returned from 'analysis' function that identifies the effect of the treatment and the mediator on the outcome.
 #' @param predictions A 'pr_list' object with the desired change in the treatment. The treatment should be in both equations.
-#' @param .outcome Optional name for the outcome. If this is missing the name of the variable is used automatically.
+#' @param times An optional vector indicating the time(s) to conduct the mediation analysis if the outcome is a survival model.
+#' @param draws An optional integer indicating the number of draws (randomly sampled) from the results to use. Smaller values allow a
+#'   faster run.
+#' @param .outcome Optional name for the outcome. If this is missing the name of the dependent variable in 'm.outcome' is used.
+#' @return A datafame showing the direct effect, the indirect effect, the total effect, the portion of the total effect mediated,
+#'   and the effect of the treatment on the mediator.
 #' @keywords bootstrap results mediation
 #' @export
 #' @examples
 #' results_mediation(m.mediator, m.outcome, predictions = predictions.mediation)
 #'
-
 results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, draws = 1000, .outcome = NULL) {
+  # mediation analysis using posterior distributions
+  # the name of the mediator in m.med should be the same as in m.out + predictions should be in both -- add checks
+  # needs a non-survival model upfront but can work with anything at the back
+  # based on: https://imai.fas.harvard.edu/research/files/BaronKenny.pdf + https://imai.fas.harvard.edu/research/files/mediationP.pdf
+
   # use imai's updated baron-kenney approach to do mediation analysis
 
   # basic idea:
@@ -1037,13 +1342,14 @@ results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, d
   return(r)
 }
 
-# parse effects -- not robust to factors/characters with " vs." or ", "
-
 #' Helper function to parse the 'contrasts' string in a result.
+#'
+#' Currently this function should not be used as it is built in to to the 'results' function.
 #'
 #' @export
 #'
 parse_contrast = function(df) {
+  # parse effects -- not robust to factors/characters with " vs." or ", "
   r = tibble::as_tibble(t(sapply(df$.contrast, function(str) {
     r = unlist(stringr::str_split(str, " vs. "))
     if(stringr::str_detect(str, ", ")) {
@@ -1056,18 +1362,31 @@ parse_contrast = function(df) {
   r
 }
 
-#' Provide a qualitative assessment for a set of results (main, interaction, and mediation effects)
+#' Provide a qualitative assessment for a set of results (main, interaction, and mediation effects).
 #'
+#' This function provides a human interpretable understanding of a research plan and the results from analyzing
+#' the research plan.
+#'
+#' @family results
+#' @param research.plan Object returned from 'research_plan' function.
+#' @param all.results Object returned from 'analyze_plan' function.
+#' @return A list providing an English-language description of the results for each outcome/direction. Currently, the
+#'   a description of all of the variables that impact an outcome in a direction (and when and how), as well as a rank
+#'   ordering of the magnitude of the effect of the variables for an outcome in a direction. Only results that are
+#'   statistically significant at the 0.1 level or better are described.
+#' @keywords results, qualitative
 #' @export
 #'
 qualitative_assessment = function(research.plan, all.results) {
+  # TODO: allow user to select criteria to scope the assessment (e.g., effect when source has a large economy and target has a large army, etc.)
+
   # set the parts
   main.res = purrr::map_dfr(all.results, "main.contrasts")
   interaction.res = purrr::map_dfr(all.results, "interaction.contrasts", .id = ".main.variable")
   mediation.res = purrr::map_dfr(all.results, "mediation.contrasts", .id = ".main.variable")
 
-  # duplicates in mediation.res because our plan had duplicates -- should get the plan to check duplicates
-  mediation.res = mediation.res[!duplicated(dplyr::select(mediation.res, .main.variable, .main.mediation, .outcome, .effect)), ]
+  # # duplicates in mediation.res because our plan had duplicates -- should get the plan to check duplicates
+  # mediation.res = mediation.res[!duplicated(dplyr::select(mediation.res, .main.variable, .main.mediation, .outcome, .effect)), ]
 
   # how many significant values would you need to look through
   # table(c(main.res$p.value, interaction.res$p.value, mediation.res$p.value) < 0.1)
@@ -1102,7 +1421,7 @@ qualitative_assessment = function(research.plan, all.results) {
   qualitative_effect = function(df) {
     # make sure it has the right columns
     if(!all(c("c", "c.low", "c.high", "p.value", ".compare") %in% colnames(df))) {
-      stop("Dataframe does not have correcte columns.")
+      stop("Dataframe does not have correct columns.")
     }
 
     # add blank time if missing
@@ -1169,10 +1488,14 @@ qualitative_assessment = function(research.plan, all.results) {
     return(r)
   }
 
+  # add NA time column if not present
+  if(!rlang::has_name(main.res, ".time")) main.res$.time = NA
+  if(!rlang::has_name(interaction.res, ".time")) interaction.res$.time = NA
+
   # combine and select
   all.effects = dplyr::bind_rows(
-    dplyr::bind_cols(dplyr::select(dplyr::ungroup(interaction.res), .outcome, .time, .main.variable, .main.interaction, c, c.low, c.high, p.value), parse_contrast(interaction.res)),
-    dplyr::bind_cols(dplyr::select(dplyr::ungroup(main.res), .outcome, .time, .main.variable, c, c.low, c.high, p.value), parse_contrast(main.res))
+    dplyr::bind_cols(dplyr::select(dplyr::ungroup(main.res), tidyselect::any_of(c(".outcome", ".time", ".main.variable", "c", "c.low", "c.high", "p.value"))), parse_contrast(main.res)),
+    dplyr::bind_cols(dplyr::select(dplyr::ungroup(interaction.res), tidyselect::any_of(c(".outcome", ".time", ".main.variable", ".main.interaction", "c", "c.low", "c.high", "p.value"))), parse_contrast(interaction.res))
   )
 
   # set mediation too
@@ -1180,7 +1503,7 @@ qualitative_assessment = function(research.plan, all.results) {
 
   # add compare
   all.effects = dplyr::mutate(dplyr::group_by(all.effects, .outcome, .time), .compare = mean(abs(c[p.value < 0.1])))
-  med.effects = dplyr::mutate(dplyr::group_by(med.effects, .outcome), .compare = mean(abs(c[.effect == "total.effect"])))
+  if(!is.null(med.effects) && nrow(med.effects) > 0) med.effects = dplyr::mutate(dplyr::group_by(med.effects, .outcome), .compare = mean(abs(c[.effect == "total.effect"])))
 
   # identify low and high values
   all.effects = dplyr::mutate(dplyr::group_by(all.effects, .outcome, .time, .main.variable, .main.interaction),
@@ -1189,29 +1512,37 @@ qualitative_assessment = function(research.plan, all.results) {
 
   # describe effects
   all.effects = dplyr::bind_cols(all.effects, qualitative_effect(all.effects))
-  med.effects = dplyr::bind_cols(med.effects, qualitative_effect(med.effects))
+  if(!is.null(med.effects) && nrow(med.effects) > 0) med.effects = dplyr::bind_cols(med.effects, qualitative_effect(med.effects))
 
   # first filter out insignificant results
   all.signif = dplyr::filter(all.effects, significance != "insignificant")
-  med.signif = dplyr::select(dplyr::filter(
-    dplyr::mutate(dplyr::group_by(med.effects, .outcome, .main.variable, .main.mediation),
-                  med.direction = if(any(c[.effect == "treat.on.mediator"] * c[.effect == "indirect.effect"] >= 0)) "positive" else "negative",
-                  .to.keep = any(significance[.effect %in% c("indirect.effect", "treat.on.mediator")] != "insignificant")),
-    .to.keep == T), -.to.keep)
-
+  if(!is.null(med.effects) && nrow(med.effects) > 0) {
+    med.signif = dplyr::select(dplyr::filter(
+      dplyr::mutate(dplyr::group_by(med.effects, .outcome, .main.variable, .main.mediation),
+                    med.direction = if(any(c[.effect == "treat.on.mediator"] * c[.effect == "indirect.effect"] >= 0)) "positive" else "negative",
+                    .to.keep = any(significance[.effect %in% c("indirect.effect", "treat.on.mediator")] != "insignificant")),
+      .to.keep == T), -.to.keep)
+  } else {
+    med.signif = NULL
+  }
 
   # summarize to get unique effects
-  all.signif = dplyr::summarize(
+  all.signif.outcome = dplyr::summarize(
     dplyr::group_by(all.signif, .outcome, .main.variable, .main.label, .main.interaction, .additional.label, v2.size, significance, direction, size),
     time = paste_list(time),
-    label = size.label[as.integer(dplyr::n() / 2)],
+    label = size.label[median(dplyr::n())],
     .groups = "keep"
   )
+
+  # make sure we have significant outcomes
+  if(nrow(all.signif.outcome) == 0) {
+    return(list(all = NULL, ranked = NULL))
+  }
 
   # two ways to summarize -- by variable and by outcome
 
   # summarize by outcome
-  all.signif.outcome = dplyr::group_map(dplyr::group_by(all.signif, .outcome, direction), ~ {
+  all.signif.outcome = dplyr::group_map(dplyr::group_by(all.signif.outcome, .outcome, direction), ~ {
     # determine if there are multiple variables
     .plural = if(dplyr::n_distinct(.x$.main.label) > 1) T else F
 
@@ -1250,20 +1581,23 @@ qualitative_assessment = function(research.plan, all.results) {
       }
 
       # now deal with mediation when it is present
+      if(!is.null(med.signif)) {
+        # pull mediation data -- only for a certain direction so also filter that
+        .x.med = dplyr::filter(med.signif, .main.variable == unique(.x$.main.variable), .outcome == unique(.x$.outcome), med.direction == unique(.x$direction))
+        .x.med = dplyr::mutate(dplyr::group_by(.x.med, .main.mediation),
+                               .treat.direction = dplyr::if_else(c[.effect == "treat.on.mediator"] >= 0, "increasing", "decreasing"))
 
-      # pull mediation data -- only for a certain direction so also filter that
-      .x.med = dplyr::filter(med.signif, .main.variable == unique(.x$.main.variable), .outcome == unique(.x$.outcome), med.direction == unique(.x$direction))
-      .x.med = dplyr::mutate(dplyr::group_by(.x.med, .main.mediation),
-                             .treat.direction = dplyr::if_else(c[.effect == "treat.on.mediator"] >= 0, "increasing", "decreasing"))
+        # describe mediation effect if present
+        if(nrow(.x.med) > 0) {
+          # get the individual effects
+          med.dir.effect = dplyr::group_map(dplyr::group_by(.x.med, .treat.direction), ~ {
+            paste0(unique(.x.med$.treat.direction), " ", paste_list(.x.med$.additional.label, wrap = "'"))
+          })
 
-      # describe mediation effect if present
-      if(nrow(.x.med) > 0) {
-        # get the individual effects
-        med.dir.effect = dplyr::group_map(dplyr::group_by(.x.med, .treat.direction), ~ {
-          paste0(unique(.x.med$.treat.direction), " ", paste_list(.x.med$.additional.label, wrap = "'"))
-        })
-
-        med.str = paste0(". Variable '", unique(.x$.main.label), "' also has a mediating impact by ", paste_list(med.dir.effect))
+          med.str = paste0(". Variable '", unique(.x$.main.label), "' also has a mediating impact by ", paste_list(med.dir.effect))
+        } else {
+          med.str = ""
+        }
       } else {
         med.str = ""
       }
@@ -1282,10 +1616,44 @@ qualitative_assessment = function(research.plan, all.results) {
     return(str)
   }, .keep = T)
 
+  # expand add in the comparison of results to identify what is best for a particular outcome -- should allow general guidance and also guidance under specific circumstances -- all effects or only significant?
+
+  # if we look at conditionality we get information overload; if we don't we can get misleading estimates; really this will work best when a user can select some conditions under which they want to estimate effects
+
+  # rank order effects
+  all.signif.ranked = dplyr::group_map(dplyr::group_by(dplyr::filter(all.signif, significance != "possible"), .outcome, direction), ~ {
+    # arrange by largest effect first
+    signif.arrange = dplyr::arrange(.x, dplyr::desc(percent))
+
+    # reverse factor ordering just so we have highest first
+    signif.arrange$size = forcats::fct_rev(signif.arrange$size)
+
+    # and group by time and size
+    str = dplyr::group_map(dplyr::group_by(signif.arrange, time, size), ~ {
+      # and if we have a vowel before size
+      .vowel = if(grepl("^(a|e|i|o|u)", unique(.x$size))) T else F
+
+      # add condition
+      .x$.full.label = dplyr::if_else(is.na(.x$.additional.label), paste0(.x$.main.label, " (unconditional)"), paste0(.x$.main.label, " (conditional)"))
+      # .x$.full.label = dplyr::if_else(is.na(.x$.additional.label), .x$.main.label, paste0(.x$.main.label, " (when ", .x$.additional.label, " is '", .x$v2.size, "')"))
+
+      # determine if there are multiple variables
+      .plural = if(dplyr::n_distinct(.x$.full.label) > 1) T else F
+
+      # create string
+      paste0(paste_list(unique(.x$.full.label)), " ", if(.plural) "have" else "has", " a", if(.vowel) "n " else " ", unique(.x$size), " impact")
+    }, .keep = T)
+
+    # create string -- also deal with no time being present
+    paste0(if(is.na(unique(.x$time))) "In general " else paste0("In the ", unique(.x$time), " run "), paste_list(str))
+  }, .keep = T)
+
+
   # set the names
   names(all.signif.outcome) = apply(unique(dplyr::select(dplyr::ungroup(all.signif), .outcome, direction)), 1, paste, collapse = ", ")
+  names(all.signif.ranked) = apply(unique(dplyr::select(dplyr::ungroup(all.signif), .outcome, direction)), 1, paste, collapse = ", ")
 
   # return -- has main effects, interaction effects, and mediation effects sorted by outcome
-  return(all.signif.outcome)
+  return(list(all = all.signif.outcome, ranked = all.signif.ranked))
 }
 

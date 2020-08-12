@@ -12,5 +12,20 @@ formula_iv_as_dv(x)
 \description{
 This function is a helper function to allow easy identification of the controls that correlate with the IV.
 }
+\seealso{
+Other research plan functions: 
+\code{\link{add_transform}()},
+\code{\link{analyze_plan}()},
+\code{\link{build_other_values}()},
+\code{\link{create_new_formula}()},
+\code{\link{create_plan_data}()},
+\code{\link{create_research_formulas}()},
+\code{\link{create_variable_table}()},
+\code{\link{identify_problematic_variables}()},
+\code{\link{identify_variable_transformations}()},
+\code{\link{research_plan}()},
+\code{\link{trim_formula}()}
+}
+\concept{research plan functions}
 \keyword{formulas,}
 \keyword{variables}

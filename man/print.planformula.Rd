@@ -3,12 +3,29 @@
 \name{print.planformula}
 \alias{print.planformula}
 \alias{show.planformula}
+\alias{formula.planformula}
+\alias{terms.planformula}
+\alias{as.character.planformula}
 \title{Print and show methods for planformula}
 \usage{
 \method{print}{planformula}(x, useS4 = F)
 
 \method{show}{planformula}(x)
+
+\method{formula}{planformula}(x, to.drop = NULL, transform.iv = NULL)
+
+\method{terms}{planformula}(x)
+
+\method{as.character}{planformula}(x)
+}
+\arguments{
+\item{x}{A return from the function 'create_new_formula'.}
+
+\item{to.drop}{A list of variable names to remove from the formula.}
+
+\item{transform.iv}{A string that identifies a function name to wrap the main IV.}
 }
 \description{
-Print and show methods for planformula
+These functions provide easy ways to manpulate or show the contents of a
+'planformula' object.
 }

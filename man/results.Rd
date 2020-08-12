@@ -24,13 +24,29 @@ results(
 
 \item{.full.matrix}{Whether to return structured predictions (the default) or the full matrix.}
 }
+\value{
+A list with coefficient values, predictions, and contrasts. If '.full.matrix' is set, the unsummarized matrix
+  for both predictions and contrasts is returned as well.
+}
 \description{
-This function allows you to get results from an analysis.
+This function allows you to get results based on specified predictions from the return object produced by the
+'analyze' function. Results are produced on the scale of the response variable.
+}
+\details{
+Predictions estimate the value of the response variable when one or more independent variables is set to a desired
+value (as indicated by 'predictions'). Contrasts compare two or more predictions.
 }
 \examples{
 results(object = output, predictions = main.predictions)
 
 }
+\seealso{
+Other results: 
+\code{\link{qualitative_assessment}()},
+\code{\link{results_mediation}()},
+\code{\link{summarize_interval}()}
+}
+\concept{results}
 \keyword{bootstrap}
 \keyword{prediction}
 \keyword{results}
