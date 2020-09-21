@@ -128,16 +128,16 @@ necessary variables in a formula to include, runs the model, and aggregates the 
 For instance, the predictions and contrasts returned for the main effect are as follows:
 
 ```r
-# PREDICTIONS:
-#   .outcome           .main.variable .prediction.id treat      c  c.low c.high p.value draws
-#   <chr>              <chr>                   <dbl> <dbl>  <dbl>  <dbl>  <dbl>   <dbl> <dbl>
-# 1 Earnings           treat                       1     1 23056. 21146. 24816.       0   500
-# 2 Earnings           treat                       2     0 20329. 19955. 20744.       0   500
-
-# CONTRASTS:
-#   .outcome           .main.variable .contrast .prediction.id     c c.low c.high p.value draws v1.high.p1 v1.low.p1
-#   <chr>              <chr>          <chr>     <chr>          <dbl> <dbl>  <dbl>   <dbl> <dbl> <chr>      <chr>    
-# 1 Earnings           treat          1 vs. 0   1, 2           2761.  767.  4638.   0.008   500 1          0        
+  PREDICTIONS:
+    .outcome           .main.variable .prediction.id treat      c  c.low c.high p.value draws
+    <chr>              <chr>                   <dbl> <dbl>  <dbl>  <dbl>  <dbl>   <dbl> <dbl>
+  1 Earnings           treat                       1     1 23056. 21146. 24816.       0   500
+  2 Earnings           treat                       2     0 20329. 19955. 20744.       0   500
+  
+  CONTRASTS:
+    .outcome           .main.variable .contrast .prediction.id     c c.low c.high p.value draws v1.high.p1 v1.low.p1
+    <chr>              <chr>          <chr>     <chr>          <dbl> <dbl>  <dbl>   <dbl> <dbl> <chr>      <chr>
+  1 Earnings           treat          1 vs. 0   1, 2           2761.  767.  4638.   0.008   500 1          0
 ```
 
 These results show the predicted impact of treatment at a value of '1' and '0' (median effect, low and high confidence 

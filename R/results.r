@@ -73,11 +73,15 @@ get_summary_statistics = function(formula.list, data, labels = NULL) {
 #' @param .variable.set An optional subset of variables to examine.
 #' @param .perc For numeric variables this sets the low and high quantile values. The default is to examine the
 #'   effect of moving from the 10th percentile (0.1) to the 90th percentile (0.9).
+#' @param .few.values A value indicating the cut-off for dropping a value in the quantile. If one value represents more than
+#'   this portion of the variable (e.g., more than 66% of the values are zero using the default) than the quantile is created with this value
+#'   dropped.
 #' @return A dataframe that shows the impact of all variables (median, confidence interval, and P-value). If labels
 #'   are provided this dataframe will also contain the labels.
 #' @keywords coefficients, summary, effects
+#' @export
 #'
-get_variable_effects = function(variables, data, labels = NULL, .variable.set = NULL, .perc = c(0.1, 0.9)) {
+get_variable_effects = function(variables, data, labels = NULL, .variable.set = NULL, .perc = c(0.1, 0.9), .few.values = 2/3) {
   # function to get predictions for assessing variable effects
 
   # can accept either a formula or a vector
@@ -91,7 +95,7 @@ get_variable_effects = function(variables, data, labels = NULL, .variable.set = 
   # select frame -- if the character vector is named it automatically renames too -- pretty cool
   d.f = dplyr::select(dplyr::ungroup(data), tidyselect::any_of(f))
 
-  # reoder
+  # reorder
   if(!is.null(labels)) {
     # select present
     labels.present = labels[labels %in% colnames(d.f)]
@@ -105,20 +109,29 @@ get_variable_effects = function(variables, data, labels = NULL, .variable.set = 
     labels.present = labels.present[stringr::str_detect(labels.present, .variable.set)]
   }
 
+  # get most frequent value
+  mode = function(x) {
+    ux = unique(x)
+    ux[which.max(tabulate(match(x, ux)))]
+  }
+
   # create predictions
   r = lapply(1:length(labels.present), function(x) {
     # make sure we dont double name
     x = labels.present[x]
 
+    # get value
+    t.d = d.f[[x]]
+
     # get values
-    if(is.factor(d.f[[x]]) | is.character(d.f[[x]])) {
+    if(is.factor(t.d) | is.character(t.d)) {
       # we have a factor
 
       # get levels
-      if(is.factor(d.f[[x]])) {
-        levels = rev(levels(d.f[[x]]))
+      if(is.factor(t.d)) {
+        levels = rev(levels(t.d))
       } else {
-        levels = unique(na.omit(d.f[[x]]))
+        levels = unique(na.omit(t.d))
       }
 
       # cant seem to get rlang to work here so just do it the hard way
@@ -130,14 +143,22 @@ get_variable_effects = function(variables, data, labels = NULL, .variable.set = 
     } else {
       # we have a number
 
+      # get mode
+      t.d.mode = mode(t.d)
+
+      # do we have a lot of one value based on our "few values" cutoff and is it not a binary var
+      if(dplyr::n_distinct(t.d) > 2 && mean(t.d == t.d.mode) > .few.values) {
+        t.d = t.d[t.d != t.d.mode]
+      }
+
       # get low and high
-      l = quantile(d.f[[x]], .perc[1], na.rm = T)
-      h = quantile(d.f[[x]], .perc[2], na.rm = T)
+      l = quantile(t.d, .perc[1], na.rm = T)
+      h = quantile(t.d, .perc[2], na.rm = T)
 
       # are they the same? if so then just get low and high
       if(l == h) {
-        l = min(d.f[[x]])
-        h = max(d.f[[x]])
+        l = min(t.d)
+        h = max(t.d)
       }
 
       # cant seem to get rlang to work here so just do it the hard way
@@ -1507,8 +1528,8 @@ qualitative_assessment = function(research.plan, all.results) {
 
   # identify low and high values
   all.effects = dplyr::mutate(dplyr::group_by(all.effects, .outcome, .time, .main.variable, .main.interaction),
-                              v1.size = dplyr::case_when(v1.high != v1.low ~ "both", v1.high == max(v1.high) ~ "high", T ~ "low"),
-                              v2.size = dplyr::case_when(is.na(v2.high) ~ NA_character_, v2.high != v2.low ~ "both", v2.high == max(v2.high) ~ "high", T ~ "low"))
+                              v1.size = dplyr::case_when(is.na(as.numeric(v1.high)) ~ v1.high, v1.high != v1.low ~ "both", v1.high == max(v1.high) ~ "high", T ~ "low"),
+                              v2.size = dplyr::case_when(is.na(v2.high) ~ NA_character_, is.na(as.numeric(v2.high)) ~ v2.high, v2.high != v2.low ~ "both", v2.high == max(v2.high) ~ "high", T ~ "low"))
 
   # describe effects
   all.effects = dplyr::bind_cols(all.effects, qualitative_effect(all.effects))

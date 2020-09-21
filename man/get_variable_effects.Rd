@@ -9,7 +9,8 @@ get_variable_effects(
   data,
   labels = NULL,
   .variable.set = NULL,
-  .perc = c(0.1, 0.9)
+  .perc = c(0.1, 0.9),
+  .few.values = 2/3
 )
 }
 \arguments{
@@ -23,6 +24,10 @@ get_variable_effects(
 
 \item{.perc}{For numeric variables this sets the low and high quantile values. The default is to examine the
 effect of moving from the 10th percentile (0.1) to the 90th percentile (0.9).}
+
+\item{.few.values}{A value indicating the cut-off for dropping a value in the quantile. If one value represents more than
+this portion of the variable (e.g., more than 66% of the values are zero using the default) than the quantile is created with this value
+dropped.}
 }
 \value{
 A dataframe that shows the impact of all variables (median, confidence interval, and P-value). If labels
