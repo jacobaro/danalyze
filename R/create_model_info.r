@@ -1,6 +1,6 @@
 # functions to set model info
 
-# supported model types -- could make this a function
+# supported model types
 model.type.list =
   list(
     linear = "Gaussian",
@@ -319,9 +319,6 @@ identify_tve = function(formula, data, var = NULL, random.effects = F) {
 #' This internal function takes the model type, parsed formula, inference, and extra args and returns
 #' a list with all of the specific information (e.g., extra functions) needed to run the model. The output
 #' is used in the frequentist and Bayesian internal model run functions.
-#'
-#' For linear and categorical regression, the performance metric is log-posterior. For survival models concordance is used.
-#' For survival models, mean_PPD is the occurrence of the outcome minus the residual.
 #'
 #' @family model setup functions
 #' @param model.type The type of model to run.

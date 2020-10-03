@@ -219,6 +219,14 @@ test_plan = function() {
     "Earnings in 1974" = "re74"
   )
 
+  # try a basic plan with no other variables
+  plan.temp = research_plan(
+    treatment = treatment,
+    interaction = NULL,
+    control = NULL,
+    data = dt
+  )
+
   # create a plan -- not terribly interesting since the data is so simple
   plan = research_plan(
     treatment = treatment,
@@ -234,9 +242,9 @@ test_plan = function() {
   # now analyze the plan
   results = analyze_plan(research.plan = plan)
 
-  # produce qualitative assessment -- will return NULL if no variables or conditional effects are significant
+  # produce qualitative assessment
   assessment = qualitative_assessment(research.plan = plan, all.results = results)
 
-  # print results
+  # print results -- will show NULL if no variables or conditional effects are significant, which is the case here
   assessment
 }

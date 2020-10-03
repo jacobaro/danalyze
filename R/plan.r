@@ -13,6 +13,11 @@
 #' @return An updated formula with appropriate variable transformation functions added.
 #'
 add_transform = function(x, transforms = NULL, lag = NULL) {
+  # check to make sure we have an x
+  if(is.null(x) | length(x) == 0) {
+    return(NULL)
+  }
+
   # strip lags
   x.nolag = stringr::str_replace_all(x, paste(paste0("_l", lag), collapse = "|"), "")
 
@@ -536,6 +541,11 @@ create_plan_data = function(data, all.vars, lag, prefix, unit, keep.vars) {
 identify_problematic_variables = function(.data, unit.main, variables.to.check) {
   # function to identify variables that should not be included in the analysis
 
+  # make sure we have variables to check
+  if(length(variables.to.check) < 1) {
+    return(NULL)
+  }
+
   # select -- ordering so we keep source and target as highest priority
   .data.col = dplyr::select(.data, tidyselect::any_of(c(unit.main, variables.to.check)))
 
@@ -682,7 +692,7 @@ create_research_formulas = function(all.vars, all.transform, lag) {
     f.base = create_new_formula(iv = t, controls = t.vars[!t.vars %in% c(t)], transforms = all.transform, lag = lag)
 
     # check if we have variables
-    if(length(all.vars$target[all.vars$type == "interaction"]) > 0) {
+    if(any(all.vars$type == "interaction")) {
       # create formulas for interactions
       f.int.vars = na.omit(c(all.vars$source[all.vars$type == "interaction"], all.vars$target[all.vars$type == "interaction"], all.vars$relative[all.vars$type == "interaction"]))
       f.int = lapply(f.int.vars, function(i) create_new_formula(iv = c(t, i), controls = t.vars[!t.vars %in% c(t, i)], transforms = all.transform, lag = lag))
@@ -692,7 +702,7 @@ create_research_formulas = function(all.vars, all.transform, lag) {
     }
 
     # check if we have variables
-    if(length(all.vars$target[all.vars$type == "mediation"]) > 0) {
+    if(any(all.vars$type == "mediation")) {
       # create formulas for mediating effects -- requires two "med ~ iv" and "outcome ~ iv + med"
       f.med.vars = dplyr::if_else(sapply(all.vars$target[all.vars$type == "mediation"], is.null), all.vars$source[all.vars$type == "mediation"], all.vars$target[all.vars$type == "mediation"])
       f.med = lapply(f.med.vars, function(m) list(mediator = create_new_formula(dv = m, iv = t, controls = t.vars[!t.vars %in% c(t, m)], transforms = all.transform, lag = lag),
@@ -739,7 +749,8 @@ create_research_formulas = function(all.vars, all.transform, lag) {
 #' unit = list(unit = "dispute.id", time = "time"), lag = 1:2)
 #'
 research_plan = function(treatment, control = NULL, interaction = NULL, mediation = NULL, data, keep.vars = NULL, factor.transform = NULL,
-                         prefix = list(source = "sv", target = "tv", other = "oth", relative = "rel"), unit = list(unit = NULL, source = NULL, target = NULL, time = NULL), lag = NULL) {
+                         prefix = list(source = "sv", target = "tv", other = "oth", relative = "rel"), unit = list(unit = NULL, source = NULL, target = NULL, time = NULL),
+                         lag = NULL) {
   # below, we identify the variables we need to use, create new data to correspond to these variables, create formulas to use the variables, and then return everything
 
   # update to incorporate selection based on dependent variable
@@ -757,7 +768,8 @@ research_plan = function(treatment, control = NULL, interaction = NULL, mediatio
   # TODO: could add a consecutive transformation (past or within X * lag)
 
   # create a table with the variables
-  variable.table = create_variable_table(data = data, treatment = treatment, control = control, interaction = interaction, mediation = mediation, factor.transform = factor.transform, lag = lag, unit = unit, prefix = prefix)
+  variable.table = create_variable_table(data = data, treatment = treatment, control = control, interaction = interaction, mediation = mediation, factor.transform = factor.transform,
+                                         lag = lag, unit = unit, prefix = prefix)
 
   # set all vars
   all.vars = variable.table$variables
