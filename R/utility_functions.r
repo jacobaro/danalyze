@@ -178,7 +178,7 @@ create_values = function(x, .quantile = c(0.975, 0.025), .places = 2) {
 
     # make sure the values are okay
     if(diff(range(r)) < .Machine$double.eps ^ 0.5) {
-      r = c(max(x), min(x))
+      r = c(max(x, na.rm = T), min(x, na.rm = T))
     }
 
     # round
@@ -189,4 +189,52 @@ create_values = function(x, .quantile = c(0.975, 0.025), .places = 2) {
 
   # return
   return(r)
+}
+
+#' Nice model output.
+#'
+#' This function prints out a nice models summary and optionally incorporates clustered standard errors.
+#'
+#' @param m The model to print a summary for.
+#' @param cluster An optional formula identifying variables to use for clustered standard errors.
+#' @param drop.factor Drop factor variables from print output or keep them. Defaults to drop.
+#' @param .level Level of statistical significance for confidence intervals. Defaults to P < 0.05.
+#' @param .round Number of digits to round results to. Defaults to three.
+#' @return For a numeric vector this function return high and low values.
+#'   For a character vector this returns unique values.
+#' @export
+#'
+ct_to_out = function(m, cluster = NULL, drop.factor = T, .level = 0.95, .round = 3) {
+  # get coeftest
+  if("lmerMod" %in% class(m) || "lmerModLmerTest" %in% class(m)) {
+    mt = as.data.frame(summary(m)$coefficients)
+    mt$p.value = (1 - pnorm(abs(mt$`t value`))) * 2
+    colnames(mt) = c("Estimate", "Std. Error", "t value", "Pr(>|t|)")
+    mt = as.matrix(mt)
+  } else {
+    mt = lmtest::coeftest(m, get_vcov(m, cluster = cluster))
+  }
+
+  # drop factors if desired
+  if(drop.factor) {
+    mt = mt[!stringr::str_detect(rownames(mt), "factor\\("), ]
+    class(mt) = "coeftest"
+  }
+
+  # get data
+  d.data = get_data(m)
+
+  # t
+  t = qnorm(0.5 + .level / 2)
+
+  # create the output dataframe
+  r = tibble::tibble(coefficient = rownames(mt), c = mt[, 1], c.low = mt[, 1] - t * mt[, 2], c.high = mt[, 1] + t * mt[, 2], p.value = mt[, 4], draws = nrow(d.data))
+
+  # round
+  if(!is.null(.round)) {
+    r = dplyr::mutate_if(r, is.numeric, round, digits = .round)
+  }
+
+  # return
+  return(list(coeftest = mt, output = r))
 }

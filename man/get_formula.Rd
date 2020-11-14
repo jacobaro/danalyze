@@ -4,10 +4,12 @@
 \alias{get_formula}
 \title{Get formula from a frequentist or Bayesian object.}
 \usage{
-get_formula(object)
+get_formula(object, terms = T)
 }
 \arguments{
 \item{object}{The model object.}
+
+\item{terms}{Return the formula or the terms(formula). Defaults to returning terms.}
 }
 \value{
 The formula used in the model.
@@ -20,6 +22,8 @@ works on model objects produced by 'rstanarm', e.g., from a run of 'stan_glm'.
 Other internal functions: 
 \code{\link{get_data}()},
 \code{\link{get_draws}()},
+\code{\link{get_inv_link}()},
+\code{\link{get_vcov}()},
 \code{\link{results_coefficients}()},
 \code{\link{results_contrasts}()},
 \code{\link{results_predictions}()},

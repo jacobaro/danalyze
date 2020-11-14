@@ -20,6 +20,8 @@ works on model objects produced by 'rstanarm', e.g., from a run of 'stan_glm'.
 Other internal functions: 
 \code{\link{get_data}()},
 \code{\link{get_formula}()},
+\code{\link{get_inv_link}()},
+\code{\link{get_vcov}()},
 \code{\link{results_coefficients}()},
 \code{\link{results_contrasts}()},
 \code{\link{results_predictions}()},

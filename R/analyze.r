@@ -311,8 +311,8 @@ run_all_replicates = function(replicates, boot_function, N = length(replicates),
   # run -- replicates is a list of observations in data to run on, boot_function is what is run, should return NULL for a bad run
 
   # makes sure replicates is a list
-  if(!is.list(replicates)) {
-    stop("Replicates must be a list of data frames.")
+  if(!is.list(replicates) && !is.vector(replicates)) {
+    stop("Replicates must be a list or a vector.")
   }
 
   # check to make sure its a function
@@ -370,7 +370,15 @@ run_all_replicates = function(replicates, boot_function, N = length(replicates),
   tryCatch(
     time <- system.time(
       out <- foreach::foreach(i = replicates, .errorhandling = "pass", .options.snow = foreach.options) %dopar% {
-        do.call(boot_function, c(list(i), args))
+        # set args
+        if(!is.list(replicates) && "integer" %in% class(replicates)) {
+          args.all = args
+        } else {
+          args.all = c(list(i), args)
+        }
+
+        # run
+        do.call(boot_function, args.all)
       }
     ), error = has_error)
 

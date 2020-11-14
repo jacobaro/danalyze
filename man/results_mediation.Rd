@@ -45,6 +45,7 @@ results_mediation(m.mediator, m.outcome, predictions = predictions.mediation)
 }
 \seealso{
 Other results: 
+\code{\link{get_prediction_frequentist}()},
 \code{\link{qualitative_assessment}()},
 \code{\link{results}()},
 \code{\link{summarize_interval}()}

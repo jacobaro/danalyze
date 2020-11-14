@@ -1140,6 +1140,15 @@ analyze_plan = function(research.plan, .threshold = 0.3, only.run = NULL, fill.i
     # add coefficients and predictions
 
     # get the main coefficients
+    f.main.forulas = lapply(names(r.outcome), function(x) {
+      if(!is.null(r.outcome[[x]]$main)) {
+        df = lapply(r.outcome[[x]]$main, function(x) get_formula(x$model))
+      } else {
+        return(NULL)
+      }
+    })
+
+    # get the main coefficients
     f.main.coefficients = dplyr::bind_rows(lapply(names(r.outcome), function(x) {
       if(!is.null(r.outcome[[x]]$main)) {
         df = purrr::map_dfr(r.outcome[[x]]$main, "coefficients", .id = ".main.variable")
@@ -1210,7 +1219,7 @@ analyze_plan = function(research.plan, .threshold = 0.3, only.run = NULL, fill.i
     }))
 
     # the full results for an outcome
-    r = list(variable = variable,
+    r = list(variable = variable, main.formulas = f.main.forulas,
              main.coefficients = f.main.coefficients, main.predictions = f.main.predictions, main.contrasts = f.main.contrasts,
              interaction.coefficients = f.interaction.coefficients, interaction.predictions = f.interaction.predictions, interaction.contrasts = f.interaction.contrasts,
              mediation.contrasts = f.mediation.contrasts)

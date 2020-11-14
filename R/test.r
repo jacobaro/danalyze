@@ -242,7 +242,7 @@ test_plan = function() {
   # now analyze the plan
   results = analyze_plan(research.plan = plan)
 
-  # produce qualitative assessment
+  # produce qualitative assessment -- warning about NAs by coercion is normal
   assessment = qualitative_assessment(research.plan = plan, all.results = results)
 
   # print results -- will show NULL if no variables or conditional effects are significant, which is the case here

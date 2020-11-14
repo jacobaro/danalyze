@@ -23,6 +23,7 @@ the research plan.
 }
 \seealso{
 Other results: 
+\code{\link{get_prediction_frequentist}()},
 \code{\link{results_mediation}()},
 \code{\link{results}()},
 \code{\link{summarize_interval}()}

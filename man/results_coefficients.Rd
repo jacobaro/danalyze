@@ -28,6 +28,8 @@ Other internal functions:
 \code{\link{get_data}()},
 \code{\link{get_draws}()},
 \code{\link{get_formula}()},
+\code{\link{get_inv_link}()},
+\code{\link{get_vcov}()},
 \code{\link{results_contrasts}()},
 \code{\link{results_predictions}()},
 \code{\link{structure_predictions}()}

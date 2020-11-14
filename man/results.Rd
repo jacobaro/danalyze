@@ -42,6 +42,7 @@ results(object = output, predictions = main.predictions)
 }
 \seealso{
 Other results: 
+\code{\link{get_prediction_frequentist}()},
 \code{\link{qualitative_assessment}()},
 \code{\link{results_mediation}()},
 \code{\link{summarize_interval}()}

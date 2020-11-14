@@ -37,10 +37,6 @@ This internal function takes the model type, parsed formula, inference, and extr
 a list with all of the specific information (e.g., extra functions) needed to run the model. The output
 is used in the frequentist and Bayesian internal model run functions.
 }
-\details{
-For linear and categorical regression, the performance metric is log-posterior. For survival models concordance is used.
-For survival models, mean_PPD is the occurrence of the outcome minus the residual.
-}
 \seealso{
 Other model setup functions: 
 \code{\link{determine_model}()},
