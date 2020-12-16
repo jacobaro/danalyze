@@ -6,10 +6,11 @@
 \usage{
 get_prediction_frequentist(
   model,
-  prediction,
+  predictions = NULL,
   cluster = NULL,
   type = c("observed values", "mean", "zero"),
-  response = T
+  response = T,
+  fe.fix = T
 )
 }
 \arguments{

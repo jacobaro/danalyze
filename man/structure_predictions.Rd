@@ -24,10 +24,11 @@ properly format factor variables.
 }
 \seealso{
 Other internal functions: 
+\code{\link{get_coef}()},
 \code{\link{get_data}()},
 \code{\link{get_draws}()},
 \code{\link{get_formula}()},
-\code{\link{get_inv_link}()},
+\code{\link{get_link}()},
 \code{\link{get_vcov}()},
 \code{\link{results_coefficients}()},
 \code{\link{results_contrasts}()},

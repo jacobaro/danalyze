@@ -206,9 +206,9 @@ create_values = function(x, .quantile = c(0.975, 0.025), .places = 2) {
 #'
 ct_to_out = function(m, cluster = NULL, drop.factor = T, .level = 0.95, .round = 3) {
   # get coeftest
-  if("lmerMod" %in% class(m) || "lmerModLmerTest" %in% class(m)) {
+  if(any(c("lmerMod", "glmerMod", "lmerModLmerTest", "glmerModLmerTest") %in% class(m))) {
     mt = as.data.frame(summary(m)$coefficients)
-    mt$p.value = (1 - pnorm(abs(mt$`t value`))) * 2
+    mt$p.value = (1 - pnorm(abs(mt[, 3]))) * 2
     colnames(mt) = c("Estimate", "Std. Error", "t value", "Pr(>|t|)")
     mt = as.matrix(mt)
   } else {
@@ -221,7 +221,7 @@ ct_to_out = function(m, cluster = NULL, drop.factor = T, .level = 0.95, .round =
     class(mt) = "coeftest"
   }
 
-  # get data
+  # get data -- returns the full data frame with missing values for lmer models
   d.data = get_data(m)
 
   # t
