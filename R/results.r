@@ -381,7 +381,7 @@ identify_examples = function(results, research.plan, unit = NULL, time = NULL, .
 #' @examples
 #' summarize_interval(results)
 #'
-summarize_interval = function(data, .ci = 0.95, .grouping = c(".prediction.id", "prob"), .round = 3) {
+summarize_interval = function(data, .ci = 0.95, .hdi = T, .grouping = c(".prediction.id", "prob"), .round = 3) {
   # summarize interval -- could use HDI -- should be equivalent to http://mc-stan.org/rstanarm/reference/posterior_interval.stanreg.html
 
   # set return
@@ -400,26 +400,40 @@ summarize_interval = function(data, .ci = 0.95, .grouping = c(".prediction.id", 
   r = dplyr::filter(r, !is.na(prob))
 
   # summarize
-  r = dplyr::summarize(
-    r,
-    q = NA, #list(hdi(prob, .ci)),
-    c = median(prob),
-    c.low = quantile(prob, (1 - .ci) / 2), # q[[1]][1], # quantile(prob, (1 - .ci) / 2),
-    c.high = quantile(prob, 1 - ((1 - .ci) / 2)), # q[[1]][2], # quantile(prob, 1 - ((1 - .ci) / 2)),
-    p.value = min(dplyr::if_else(c < 0, 1 - ecdf(prob)(0), ecdf(prob)(0)) * 2, 1),
-    draws = length(prob),
-    .groups = "keep"
-  )
+  if(.hdi) {
+    # summarize
+    r = dplyr::summarize(
+      r,
+      q = list(bayestestR:::.hdi(prob, ci = .ci, verbose = F)),
+      c = median(prob),
+      c.low = q[[1]][[2]],
+      c.high = q[[1]][[3]],
+      p.value = min(dplyr::if_else(c < 0, 1 - ecdf(prob)(0), ecdf(prob)(0)) * 2, 1),
+      draws = length(prob),
+      .groups = "keep"
+    )
 
-  # drop q
-  r = dplyr::select(r, -q)
+    # drop q
+    r = dplyr::select(r, -q)
+  } else {
+    # summarize
+    r = dplyr::summarize(
+      r,
+      c = median(prob),
+      c.low = quantile(prob, (1 - .ci) / 2),
+      c.high = quantile(prob, 1 - ((1 - .ci) / 2)),
+      p.value = min(dplyr::if_else(c < 0, 1 - ecdf(prob)(0), ecdf(prob)(0)) * 2, 1),
+      draws = length(prob),
+      .groups = "keep"
+    )
+  }
 
   # ungroup
   r = dplyr::ungroup(r)
 
   # round
   if(!is.null(.round)) {
-    r = dplyr::mutate_if(r, is.numeric, round, digits = .round)
+    r = dplyr::mutate(r, dplyr::across(tidyselect:::where(is.numeric), round, digits = .round))
   }
 
   # return
@@ -544,11 +558,11 @@ structure_predictions = function(formula, data, predictions, method) {
     colnames(data.merge) = colnames.overlap
     data.prediction[, colnames.overlap] = data.merge[, colnames.overlap]
 
-    # this samples for each observed value -- we want to just take mean values and the inflate by the distribution size
+    # this samples for each observed value -- we want to just take mean values and then inflate by the distribution size
     # if we passed a distribution instead of a discrete value, then go through and sample a random pair for each observation
-    data.prediction = dplyr::mutate_if(data.prediction, is.list, function(x) sapply(x, function(y) if(!is.null(y)) as.list(y) else NULL))
+    # data.prediction = dplyr::mutate_if(data.prediction, is.list, function(x) sapply(x, function(y) if(!is.null(y)) as.list(y) else NULL))
     data.prediction = tidyr::unnest(data.prediction, cols = colnames(data.prediction)[sapply(data.prediction, is.list)], keep_empty = T)
-    data.prediction = dplyr::mutate_if(data.prediction, is.list, function(x) sapply(x, function(y) { y[is.null(y)] = NA_real_; y }))
+    # data.prediction = dplyr::mutate_if(data.prediction, is.list, function(x) sapply(x, function(y) { y[is.null(y)] = NA_real_; y }))
 
     # # transform to model matrix
     #
@@ -684,20 +698,26 @@ get_formula = function(object, terms = T) {
   # default return
   obj.formula = NULL
 
+  # get class
+  obj.class = class(object)
+
   # object is good get the formula
 
   # get formula
   if(typeof(object) == "S4") {
-    if(any(c("lmerMod", "glmerMod") %in% class(object))) {
+    if(any(c("lmerMod", "glmerMod") %in% obj.class)) {
       obj.formula = lme4::nobars(object@call$formula)
     }
   } else{
-    if(purrr::is_formula(object$formula$formula)) {
-      obj.formula = object$formula$formula
-    } else if(any(c("felm", "feglm") %in% class(object))) {
+    if(any(c("felm", "feglm") %in% obj.class)) {
       obj.formula = formula(Formula::as.Formula(object$formula), lhs = NULL, rhs = 1)
-    } else if("fixest" %in% class(object)) {
-      obj.formula = fixest:::formula.fixest(object, "linear")
+    } else if(any(c("coxme") %in% obj.class)) {
+      obj.formula = object$formula$fixed
+    } else if(purrr::is_formula(object$formula$formula)) {
+      obj.formula = object$formula$formula
+    } else if("fixest" %in% obj.class) {
+      obj.formula = object$fml_all$linear
+      if(!is.null(object$iv) && object$iv) obj.formula = formula(paste0(obj.formula[2], " ~ ", as.character(object$fml_all$iv[2]), " + ", obj.formula[3]))
     } else if(purrr::is_formula(object$formula) || "brmsformula" %in% class(object$formula) || is.list(object$formula)) {
       obj.formula = object$formula
     } else if(!is.null(object$call$formula)) {
@@ -728,7 +748,7 @@ get_formula = function(object, terms = T) {
 get_data = function(object, data = NULL) {
   # internal function to get data from object
 
-  # return data if passed -- backwards compatability
+  # return data if passed -- backwards compatibility
   if(!is.null(data)) {
     return(data)
   }
@@ -736,17 +756,18 @@ get_data = function(object, data = NULL) {
   # set default
   data = NULL
 
-  # check
-  if(is.null(object) || !typeof(object) %in% c("list", "S4")) {
-    return(NULL)
+  # get data from object
+  if(!is.null(object$data)) {
+    data = object$data
+  } else if(!is.null(object$call$data)) {
+    data = eval(object$call$data)
+  }else if(!is.null(object@call$data)) {
+    data = eval(object@call$data)
   }
 
-  if(rlang::has_name(object, "data")) {
-    data = object$data
-  } else if(any(c("zeroinfl", "negbin", "felm", "fixest", "plm") %in% class(object))) {
-    data = eval(object$call$data)
-  } else if(any(c("lmerMod", "glmerMod") %in% class(object))) {
-    data = eval(object@call$data)
+  # need to deal with data subsets for the model run
+  if(!is.null(object$obs_selection$obsRemoved)) {
+    data = data[object$obs_selection$obsRemoved, ]
   }
 
   # return
@@ -767,10 +788,20 @@ get_link = function(object) {
   # inverse link default
   invlink = list(link = function(x) x, inv = function(x) x)
 
+  # null so return
+  if(is.null(object)) {
+    return(invlink)
+  }
+
+  # get class
+  object.class = class(object)
+
   # special for lme4
-  if(any(c("lmerMod", "glmerMod") %in% class(object))) {
+  if(any(c("lmerMod", "glmerMod") %in% object.class)) {
     link = do.call(as.character(object@call$family), list())
     return(list(link = link$linkfun, inv = link$linkinv))
+  } else if(any(c("coxph", "coxme") %in% object.class)) {
+    return(list(link = log, inv = exp))
   }
 
   # check
@@ -797,7 +828,7 @@ get_link = function(object) {
 #' @param cluster Optional formula to identify clsuter for clustered standard errors.
 #' @return The data used in the model.
 #'
-get_vcov = function(object, cluster = NULL) {
+get_vcov = function(object, cluster = NULL, iv.fix = T) {
   # internal function to get the variance-covariance matrix from an object
 
   # vcov default
@@ -830,10 +861,19 @@ get_vcov = function(object, cluster = NULL) {
     } else {
       vcov = fixest:::vcov.fixest(object)
     }
+    if(!is.null(object$iv) && object$iv && iv.fix) {
+      rownames(vcov) = gsub("^fit_", "", rownames(vcov))
+      colnames(vcov) = gsub("^fit_", "", colnames(vcov))
+    }
   } else if(any(c("lmerMod", "glmerMod") %in% class(object))) {
-    vcov = lme4:::vcov.merMod(object) # random effects models should account for the clustered data structure in the random effects terms
+    # random effects models should account for the clustered data structure in the random effects terms
+    vcov = lme4:::vcov.merMod(object)
   } else if("plm" %in% class(object)) {
-    vcov = plm:::vcovHC.plm(object) # defaults to clustering by group/time
+    # defaults to clustering by group/time
+    vcov = plm:::vcovHC.plm(object)
+  } else if(any(c("coxph", "coxme") %in% class(object))) {
+    # clustering accounted for in formula
+    vcov = vcov(object)
   } else {
     if(!is.null(cluster)) {
       vcov = sandwich::vcovCL(object, cluster = cluster)
@@ -862,6 +902,10 @@ get_coef = function(object) {
     coef = lme4::fixef(object)
   } else {
     coef = coef(object)
+  }
+
+  if(!is.null(object$iv) && object$iv) {
+    names(coef) = gsub("^fit_", "", names(coef))
   }
 
   # return
@@ -928,7 +972,7 @@ results_coefficients = function(obj.formula, obj.draws, obj.data, times = NULL) 
 #'   multiple dependent variables).
 #' @return The predictions table.
 #'
-results_predictions = function(object, pr, obj.draws, method = c("observed values", "mean"), draws = 1000, times = NULL, m = NULL) {
+results_predictions = function(object, pr, obj.draws, method = c("observed values", "mean"), draws = 1000, times = NULL, m = NULL, response = T) {
   # internal function to process and return predictions
 
   # do we have predictions
@@ -1043,8 +1087,15 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
       return(predict.df)
     }
 
+    # set response type
+    if(response) {
+      type = "cdf"
+    } else {
+      type = "loghaz" # the linear predictors (exponentiate to get the  hazard)
+    }
+
     # combine
-    predict.df = dplyr::bind_rows(lapply(times, predict_survival, object = object, newdata = pr$data, obj.draws = obj.draws))
+    predict.df = dplyr::bind_rows(lapply(times, predict_survival, object = object, newdata = pr$data, obj.draws = obj.draws, type = type))
 
     # # return
     # if(overwrite.baseline) {
@@ -1092,11 +1143,19 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
     #   pp.eta = rstanarm:::pp_eta(object, pp.data)
     # }
 
-    # get the linear predictors and then transform by the inverse link function -- all pretty basic
-    pp.args = rstanarm:::pp_args(object, pp.eta, m = m)
+
+
+    # linear predictors or response scale
+    if(response) {
+      # get the linear predictors and then transform by the inverse link function -- all pretty basic
+      pp.args = rstanarm:::pp_args(object, pp.eta, m = m)
+      mu = pp.args$mu
+    } else {
+      mu = pp.eta$eta
+    }
 
     # turn into usable data frame
-    predict.df = tibble::as_tibble(t(pp.args$mu), .name_repair = "none")
+    predict.df = tibble::as_tibble(t(mu), .name_repair = "none")
     names(predict.df) = as.character(1:ncol(predict.df))
     predict.df$.prediction.id = .prediction.id
   }
@@ -1198,25 +1257,38 @@ results_contrasts = function(pr, predict.df) {
 #' @keywords frequentist results prediction
 #' @export
 #'
-get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL, type = c("observed values", "mean", "zero"), response = T, fe.fix = T) {
+get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL, vcov = NULL, type = c("observed values", "mean", "zero"), response = T, fe.fix = T) {
   # get the formula
   formula = get_formula(model, terms = F)
 
   # get the data
-  data = tibble::as_tibble(get_data(model))
+  data = dplyr::ungroup(tibble::as_tibble(get_data(model)))
 
   # make sure we are selecting just the complete cases
   data = data[complete.cases(data[, all.vars(formula)]), ]
 
   # get the inverse model link
-  if(response) {
+  if(is.function(response) || (response != F && !is.null(response))) {
+    # get the family link/inv
     link = get_link(model)
+
+    # if we want to un-transform the dv wrap the link in the response inv
+    if(is.function(response)) {
+      link.t.link = link$link
+      link.t.inv = link$inv
+      link = list(link = function(x) response(link.t.link(x)), inv = function(x) response(link.t.inv(x)))
+    }
   } else {
+    # no link
     link = list(link = function(x) x, inv = function(x) x)
   }
 
-  # get the vcov
-  t.vcov = get_vcov(model, cluster = cluster)
+  # get the vcov -- use the one passed if its not null
+  if(is.null(vcov)) {
+    t.vcov = get_vcov(model, cluster = cluster)
+  } else {
+    t.vcov = vcov
+  }
 
   # get the coefficients
   t.coef = get_coef(model)
@@ -1228,23 +1300,36 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
   data.frame = model.matrix(formula, data)
   data.frame = data.frame[, names(t.coef)]
 
-  # fixed effects from model
-  if(!fe.fix) {
-    link.fe.fix = 0
-  } else if(any(pmatch("predict", unlist(lapply(class(model), function(x) methods(class = x))), nomatch = 0))) {
-    link.fe.fix = suppressWarnings(predict(model, type = "link")) - as.numeric(t.coef %*% t(data.frame))
-  } else {
-    # no predict method so try to generate from fitted values
-    fitted.name = names(model)[dplyr::first(na.omit(match(c("fitted", "fitted.values"), names(model))))]
+  # fe fix defaults to zero
+  link.fe.fix = 0
+
+  # fixed effects from model (or random effects, or baseline hazard, etc.)
+  if(fe.fix) {
+    # no predict method so try to generate from fitted values -- putting linear predictors first allows us to get the link values if possible before values on the response scale
+    fitted.name = names(model)[dplyr::first(na.omit(match(c("linear.predictors", "linear.predictor", "fitted", "fitted.values", "fitted.value"), names(model))))]
+
+    # # get FEs through the model -- produces a value identical to the fe fix hack below
+    # m.fe = alpaca::getFEs(model)
+    # link.fe.fix = rowSums(tibble::as_tibble(sapply(names(m.fe), function(x) m.fe[[x]][match(as.character(model$data[[x]]), names(m.fe[[x]]))])))
+
+    # for the fixest models the fitted.values is on the response scale so it borks for models with a link
+
+    # if the model has a linear predictor already just pull that
     if(!is.na(fitted.name)) {
       link.fe.fix = model[[fitted.name]] - as.numeric(t.coef %*% t(data.frame))
-    } else {
-      link.fe.fix = 0
+    } else if(any(pmatch("predict", unlist(lapply(class(model), function(x) methods(class = x))), nomatch = 0))) {
+      link.fe.fix = suppressWarnings(predict(model, type = "link")) - as.numeric(t.coef %*% t(data.frame))
     }
+
+    # make numeric
+    link.fe.fix = as.numeric(link.fe.fix)
   }
 
-  # get predictions
+  # get predictions if they are specified
   if(!is.null(predictions)) {
+    # additive or multiplicative
+    is.hazard = if_else(any(c("coxme", "coxph") %in% class(model)), 1, 0)
+
     # combine all predictions
     raw.preds = suppressWarnings(tibble::rownames_to_column(dplyr::distinct(dplyr::bind_rows(vctrs::vec_c(predictions))), var = ".prediction.id"))
     raw.preds$.prediction.id = as.numeric(raw.preds$.prediction.id)
@@ -1254,27 +1339,6 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
 
     # get the type
     type.pred = match.arg(type, c("observed values", "mean", "zero"))
-
-    # # function to get the transformed names of variables in a prediction frame
-    # get_transformed_names = function(formula, data) {
-    #   # get terms
-    #   formula.terms = terms(formula)
-    #
-    #   # get the names of the model matrix columns that correspond to our prediction frame
-    #   var.names = rownames(attr(terms(formula), "factors"))[na.omit(match(colnames(data), all.vars(formula)))]
-    #
-    #   # identify any factors or interactions the variable is involved with
-    #   var.names = colSums(attr(terms(formula), "factors")[rownames(attr(terms(formula), "factors")) %in% var.names, , drop = F])
-    #
-    #   # identify how many components correspond; 0 = none, 1 = all; 0.5 = some;
-    #   var.names = var.names / attr(terms(formula), "order")
-    #
-    #   # select only relevant transformed variable names
-    #   var.names = var.names[var.names == 1]
-    #
-    #   # return
-    #   return(names(var.names))
-    # }
 
     # function to set zero
     set_zero_frame = function(data, exclude = NULL, include = NULL) {
@@ -1355,62 +1419,101 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
       return(list(full = d.obs.full, zero = d.obs.zero))
     }
 
-    # logic: for predictions get the raw value, low/high, z score, and transformed value -- allows contrasts to use z score to put correct cis around difference on response scale
-
     # # turn the hypothesis dataframe into a prediction
-    # create_linear_values = function(pr.d, model, t.vcov, signif = 0.95, link.fe.fix, t.coef, response.diff = NULL) {
-    #   # get the estimate
-    #   beta = as.numeric(t.coef %*% t(pr.d$full))
+    # create_linear_values = function(prf, t.coef, t.vcov, signif = 0.95, link, link.fe.fix) {
+    #   # run through and set prediction and ses
+    #   prf.preds = lapply(prf, function(x) {
+    #     # set the linear prediction
+    #     lin.pred = as.numeric(t.coef %*% t(x$full))
     #
-    #   # shrink the prediction frame to produce standard errors for observed values
-    #   if(type.pred == "observed values") {
-    #     frame.zero = matrix(colMeans(pr.d$zero), nrow = 1)
+    #     # return
+    #     return(lin.pred)
+    #   })
+    #
+    #   # set the fixed effects fix
+    #   t.fe.fix = if(length(prf.preds[[1]]) > 1) link.fe.fix else mean(link.fe.fix)
+    #
+    #   # get the  frames
+    #   if(length(prf) > 2) {
+    #     # set frames
+    #     beta.frame = (prf.preds[[1]] - prf.preds[[2]]) - (prf.preds[[3]] - prf.preds[[4]])
+    #     zero.frame = (prf[[1]]$zero - prf[[2]]$zero) - (prf[[3]]$zero - prf[[4]]$zero)
+    #   } else if(length(prf) > 1) {
+    #     # set frames
+    #     beta.frame = (prf.preds[[1]] - prf.preds[[2]])
+    #     zero.frame = (prf[[1]]$zero - prf[[2]]$zero)
     #   } else {
-    #     frame.zero = pr.d$zero
+    #     # set frames
+    #     beta.frame = prf.preds[[1]] + t.fe.fix
+    #     zero.frame = prf[[1]]$zero
     #   }
     #
     #   # get transposed matrix product
-    #   tcp = tcrossprod(as.matrix(t.vcov), frame.zero)
+    #   tcp = tcrossprod(as.matrix(t.vcov), zero.frame)
     #
-    #   # get the standard error -- should really just produce the standard error for the items involved in the prediction frame -- set everything else to zero
-    #   ses = sqrt(diag(frame.zero %*% tcp))
+    #   # get the standard error
+    #   ses = sqrt(diag(zero.frame %*% tcp))
     #
     #   # t-value
     #   q.val = qnorm(1 - (1 - signif) / 2)
     #
+    #   # get the confidence interval
+    #   ci = mean(abs((ses * q.val) / beta.frame))
+    #
     #   # set the p-value
-    #   p.value = 2 * (1 - (1 - pnorm(-abs(beta)/ses)))
+    #   p.value = 2 * (1 - (1 - pnorm(-abs(mean(beta.frame)) / ses)))
     #
-    #   # add in the fixed effects fix
-    #   if(type.pred == "observed values") {
-    #     beta.fix = beta + link.fe.fix
-    #   } else if(type.pred == "mean") {
-    #     beta.fix = beta + mean(link.fe.fix)
+    #   # set things
+    #   v = lapply(prf.preds, function(x) x + t.fe.fix) # add the fe fix to our linear predictor frame
+    #   v.se = ses * q.val / length(prf) # set the standard error for each part of the contrast (sums to ses * q.val)
+    #   `%v%` = function(x, y) if(any(c("coxph", "coxme") %in% class(model))) x / y else x - y
+    #
+    #   # get the return values
+    #   if(length(prf) > 2) {
+    #     # get diff in diff
+    #     # r.v = tibble::tibble(
+    #     #   c = mean((link$inv(prf.preds[[1]] + t.fe.fix) - link$inv(prf.preds[[2]] + t.fe.fix)) -
+    #     #              (link$inv(prf.preds[[3]] + t.fe.fix) - link$inv(prf.preds[[4]] + t.fe.fix)), na.rm = T),
+    #     #   c.low = mean((link$inv(prf.preds[[1]] - (ses * q.val / 4) + t.fe.fix) - link$inv(prf.preds[[2]] + (ses * q.val / 4) + t.fe.fix)) -
+    #     #                  (link$inv(prf.preds[[3]] + (ses * q.val / 4) + t.fe.fix) - link$inv(prf.preds[[4]] - (ses * q.val / 4) + t.fe.fix)), na.rm = T),
+    #     #   c.high = mean((link$inv(prf.preds[[1]] + (ses * q.val / 4) + t.fe.fix) - link$inv(prf.preds[[2]] - (ses * q.val / 4) + t.fe.fix)) -
+    #     #                   (link$inv(prf.preds[[3]] - (ses * q.val / 4) + t.fe.fix) - link$inv(prf.preds[[4]] + (ses * q.val / 4) + t.fe.fix)), na.rm = T),
+    #     #   p.value = p.value
+    #     # )
+    #     r.v = tibble::tibble(
+    #       c = mean((link$inv(v[[1]]) %v% link$inv(v[[2]])) %v% (link$inv(v[[3]]) %v% link$inv(v[[4]])), na.rm = T),
+    #       c.low = mean((link$inv(v[[1]] - v.se) %v% link$inv(v[[2]] + v.se)) %v% (link$inv(v[[3]] + v.se) %v% link$inv(v[[4]] - v.se)), na.rm = T),
+    #       c.high = mean((link$inv(v[[1]] + v.se) %v% link$inv(v[[2]] - v.se)) %v% (link$inv(v[[3]] - v.se) %v% link$inv(v[[4]] + v.se)), na.rm = T),
+    #       p.value = p.value
+    #     )
+    #   } else if(length(prf) > 1) {
+    #     # get contrast
+    #     # r.v = tibble::tibble(
+    #     #   c = mean(link$inv(prf.preds[[1]] + t.fe.fix) - link$inv(prf.preds[[2]] + t.fe.fix), na.rm = T),
+    #     #   c.low = mean(link$inv(prf.preds[[1]] - (ses * q.val / 2) + t.fe.fix) - link$inv(prf.preds[[2]] + (ses * q.val / 2) + t.fe.fix), na.rm = T),
+    #     #   c.high = mean(link$inv(prf.preds[[1]] + (ses * q.val / 2) + t.fe.fix) - link$inv(prf.preds[[2]] - (ses * q.val / 2) + t.fe.fix), na.rm = T),
+    #     #   p.value = p.value
+    #     # )
+    #     r.v = tibble::tibble(
+    #       c = mean(link$inv(v[[1]]) %v% link$inv(v[[2]]), na.rm = T),
+    #       c.low = mean(link$inv(v[[1]] - v.se) %v% link$inv(v[[2]] + v.se), na.rm = T),
+    #       c.high = mean(link$inv(v[[1]] + v.se) %v% link$inv(v[[2]] - v.se), na.rm = T),
+    #       p.value = p.value
+    #     )
     #   } else {
-    #     beta.fix = beta
-    #   }
-    #
-    #   # are we creating an absolute prediction or an estimate of a difference between predicitons?
-    #   if(!is.null(response.diff)) {
-    #     # ses as portion of beta
-    #     ses.size = abs(response.diff) * (ses / abs(beta))
-    #     # ses.size = link_fun(response.diff) * (ses / abs(beta))
-    #
-    #     # create the frame -- p values based on linear predictors
-    #     r.v = tibble::tibble(c = response.diff, c.low = response.diff - q.val * ses.size, c.high = response.diff + q.val * ses.size, p.value = p.value)
-    #   } else {
-    #     # create the frame -- p values based on linear predictors
-    #     r.v = tibble::tibble(c = beta.fix, c.low = beta.fix - ses * q.val, c.high = beta.fix + ses * q.val, p.value = p.value)
-    #
-    #     # transform -- the standard error is not on the response scale
-    #     if(response) {
-    #       r.v = dplyr::mutate_at(r.v, dplyr::vars(c, c.low, c.high), link_inv)
-    #     }
-    #   }
-    #
-    #   # get the mean
-    #   if(type.pred == "observed values") {
-    #     r.v = dplyr::summarize_all(r.v, mean, na.rm = T)
+    #     # get prediction -- these will look odd when using a survival model -- could get the baseline
+    #     # r.v = tibble::tibble(
+    #     #   c = mean(link$inv(prf.preds[[1]] + t.fe.fix), na.rm = T),
+    #     #   c.low = mean(link$inv(prf.preds[[1]] - ses * q.val + t.fe.fix), na.rm = T),
+    #     #   c.high = mean(link$inv(prf.preds[[1]] + ses * q.val + t.fe.fix), na.rm = T),
+    #     #   p.value = p.value
+    #     # )
+    #     r.v = tibble::tibble(
+    #       c = mean(link$inv(v[[1]]), na.rm = T),
+    #       c.low = mean(link$inv(v[[1]] - v.se), na.rm = T),
+    #       c.high = mean(link$inv(v[[1]] + v.se), na.rm = T),
+    #       p.value = p.value
+    #     )
     #   }
     #
     #   # round
@@ -1421,31 +1524,19 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
     # }
 
     # turn the hypothesis dataframe into a prediction
-    create_linear_values2 = function(prf, t.coef, t.vcov, signif = 0.95, link.fe.fix) {
-      # run through and set prediction and ses
-      prf.preds = lapply(prf, function(x) {
-        # set the linear prediction
-        lin.pred = as.numeric(t.coef %*% t(x$full))
-
-        # return
-        return(lin.pred)
-      })
-
+    create_linear_values = function(prf, t.coef, t.vcov, signif = 0.95, link, link.fe.fix) {
       # set the fixed effects fix
-      t.fe.fix = if(length(prf.preds[[1]]) > 1) link.fe.fix else mean(link.fe.fix)
+      t.fe.fix = if(length(prf[[1]]) > 1) link.fe.fix else mean(link.fe.fix)
 
-      # get the  frames
+      # set beta frame
+      beta.frame = lapply(prf, function(x) as.numeric(t.coef %*% t(x$full) + t.fe.fix))
+
+      # set the zerp frames
       if(length(prf) > 2) {
-        # set frames
-        beta.frame = (prf.preds[[1]] - prf.preds[[2]]) - (prf.preds[[3]] - prf.preds[[4]])
         zero.frame = (prf[[1]]$zero - prf[[2]]$zero) - (prf[[3]]$zero - prf[[4]]$zero)
       } else if(length(prf) > 1) {
-        # set frames
-        beta.frame = (prf.preds[[1]] - prf.preds[[2]])
         zero.frame = (prf[[1]]$zero - prf[[2]]$zero)
       } else {
-        # set frames
-        beta.frame = prf.preds[[1]]
         zero.frame = prf[[1]]$zero
       }
 
@@ -1459,64 +1550,64 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
       q.val = qnorm(1 - (1 - signif) / 2)
 
       # get the confidence interval
-      ci = mean(abs((ses * q.val) / beta.frame))
+      ci = abs(ses) * q.val
+
+      # get ci portion
+      ci.portion = abs(ci / as.numeric(zero.frame %*% t.coef))
 
       # set the p-value
-      p.value = 2 * (1 - (1 - pnorm(-abs(mean(beta.frame)) / ses)))
+      p.value = 2 * (1 - (1 - pnorm(-abs(as.numeric(zero.frame %*% t.coef)) / ses)))
+
+      # set the operator
+      `%op%` = if(is.hazard) `/` else `-`
 
       # get the return values
       if(length(prf) > 2) {
-        # get diff in diff
-        # beta = (mean(link$inv(prf.preds[[1]] + t.fe.fix)) -  mean(link$inv(prf.preds[[2]] + t.fe.fix))) - (mean(link$inv(prf.preds[[3]] + t.fe.fix)) -  mean(link$inv(prf.preds[[4]] + t.fe.fix)))
-        # r.v = tibble::tibble(
-        #   c = (mean(link$inv(prf.preds[[1]])) - mean(link$inv(prf.preds[[2]]))) -
-        #     (mean(link$inv(prf.preds[[3]])) - mean(link$inv(prf.preds[[4]]))) + link$inv(t.fe.fix),
-        #   c.low = (mean(link$inv(prf.preds[[1]] - (ses * q.val) / 4)) - mean(link$inv(prf.preds[[2]] + (ses * q.val) / 4))) -
-        #     (mean(link$inv(prf.preds[[3]] + (ses * q.val) / 4)) - mean(link$inv(prf.preds[[4]] - (ses * q.val) / 4))) + link$inv(t.fe.fix),
-        #   c.high = (mean(link$inv(prf.preds[[1]] + (ses * q.val) / 4)) - mean(link$inv(prf.preds[[2]] - (ses * q.val) / 4))) -
-        #     (mean(link$inv(prf.preds[[3]] - (ses * q.val) / 4)) - mean(link$inv(prf.preds[[4]] + (ses * q.val) / 4))) + link$inv(t.fe.fix),
-        #   p.value = p.value
-        # )
         r.v = tibble::tibble(
-          c = (link$inv(mean(prf.preds[[1]] + t.fe.fix)) - link$inv(mean(prf.preds[[2]] + t.fe.fix))) -
-            (link$inv(mean(prf.preds[[3]] + t.fe.fix)) - link$inv(mean(prf.preds[[4]] + t.fe.fix))),
-          c.low = (link$inv(mean(prf.preds[[1]] - (ses * q.val) / 4 + t.fe.fix)) - link$inv(mean(prf.preds[[2]] + (ses * q.val) / 4 + t.fe.fix))) -
-            (link$inv(mean(prf.preds[[3]] + (ses * q.val) / 4 + t.fe.fix)) - link$inv(mean(prf.preds[[4]] - (ses * q.val) / 4 + t.fe.fix))),
-          c.high = (link$inv(mean(prf.preds[[1]] + (ses * q.val) / 4 + t.fe.fix)) - link$inv(mean(prf.preds[[2]] - (ses * q.val) / 4 + t.fe.fix))) -
-            (link$inv(mean(prf.preds[[3]] - (ses * q.val) / 4 + t.fe.fix)) - link$inv(mean(prf.preds[[4]] + (ses * q.val) / 4 + t.fe.fix))),
+          c = (mean(link$inv(beta.frame[[1]]), na.rm = T) %op% mean(link$inv(beta.frame[[2]]), na.rm = T)) %op%
+            (mean(link$inv(beta.frame[[3]]), na.rm = T) %op% mean(link$inv(beta.frame[[4]]), na.rm = T)),
+          c.low = (mean(link$inv(beta.frame[[1]] - ci / 4), na.rm = T) %op% mean(link$inv(beta.frame[[2]] + ci / 4), na.rm = T)) %op%
+            (mean(link$inv(beta.frame[[3]] + ci / 4), na.rm = T) %op% mean(link$inv(beta.frame[[4]] - ci / 4), na.rm = T)),
+          c.high = (mean(link$inv(beta.frame[[1]] + ci / 4), na.rm = T) %op% mean(link$inv(beta.frame[[2]] - ci / 4), na.rm = T)) %op%
+            (mean(link$inv(beta.frame[[3]] - ci / 4), na.rm = T) %op% mean(link$inv(beta.frame[[4]] + ci / 4), na.rm = T)),
           p.value = p.value
         )
+        # r.v = tibble::tibble(
+        #   c = (link$inv(mean(beta.frame[[1]], na.rm = T)) - link$inv(mean(beta.frame[[2]], na.rm = T))) -
+        #     (link$inv(mean(beta.frame[[3]], na.rm = T)) - link$inv(mean(beta.frame[[4]], na.rm = T))),
+        #   c.low = (link$inv(mean(beta.frame[[1]] - ci / 4, na.rm = T)) - link$inv(mean(beta.frame[[2]] + ci / 4, na.rm = T))) -
+        #     (link$inv(mean(beta.frame[[3]] + ci / 4, na.rm = T)) - link$inv(mean(beta.frame[[4]] - ci / 4, na.rm = T))),
+        #   c.high = (link$inv(mean(beta.frame[[1]] + ci / 4, na.rm = T)) - link$inv(mean(beta.frame[[2]] - ci / 4, na.rm = T))) -
+        #     (link$inv(mean(beta.frame[[3]] - ci / 4, na.rm = T)) - link$inv(mean(beta.frame[[4]] + ci / 4, na.rm = T))),
+        #   p.value = p.value
+        # )
       } else if(length(prf) > 1) {
-        # get contrast
-        # beta = mean(link$inv(prf.preds[[1]] + t.fe.fix)) -  mean(link$inv(prf.preds[[2]] + t.fe.fix))
+        r.v = tibble::tibble(
+          c = mean(link$inv(beta.frame[[1]]), na.rm = T) %op% mean(link$inv(beta.frame[[2]]), na.rm = T),
+          c.low = mean(link$inv(beta.frame[[1]] - ci / 2), na.rm = T) %op% mean(link$inv(beta.frame[[2]] + ci / 2), na.rm = T),
+          c.high = mean(link$inv(beta.frame[[1]] + ci / 2), na.rm = T) %op% mean(link$inv(beta.frame[[2]] - ci / 2), na.rm = T),
+          p.value = p.value
+        )
         # r.v = tibble::tibble(
-        #   c = mean(link$inv(prf.preds[[1]])) - mean(link$inv(prf.preds[[2]])) + link$inv(t.fe.fix),
-        #   c.low = mean(link$inv(prf.preds[[1]] - (ses * q.val) / 2)) - mean(link$inv(prf.preds[[2]] + (ses * q.val) / 2)) + link$inv(t.fe.fix),
-        #   c.high = mean(link$inv(prf.preds[[1]] + (ses * q.val) / 2)) - mean(link$inv(prf.preds[[2]] - (ses * q.val) / 2)) + link$inv(t.fe.fix),
+        #   c = link$inv(mean(beta.frame[[1]], na.rm = T)) - link$inv(mean(beta.frame[[2]], na.rm = T)),
+        #   c.low = link$inv(mean(beta.frame[[1]] - ci / 2, na.rm = T)) - link$inv(mean(beta.frame[[2]] + ci / 2, na.rm = T)),
+        #   c.high = link$inv(mean(beta.frame[[1]] + ci / 2, na.rm = T)) - link$inv(mean(beta.frame[[2]] - ci / 2, na.rm = T)),
         #   p.value = p.value
         # )
-        r.v = tibble::tibble(
-          c = link$inv(mean(prf.preds[[1]] + t.fe.fix)) - link$inv(mean(prf.preds[[2]] + t.fe.fix)),
-          c.low = link$inv(mean(prf.preds[[1]] - (ses * q.val) / 2 + t.fe.fix)) - link$inv(mean(prf.preds[[2]] + (ses * q.val) / 2 + t.fe.fix)),
-          c.high = link$inv(mean(prf.preds[[1]] + (ses * q.val) / 2 + t.fe.fix)) - link$inv(mean(prf.preds[[2]] - (ses * q.val) / 2 + t.fe.fix)),
-          p.value = p.value
-        )
       } else {
-        # get contrast
-        # beta = mean(link$inv(prf.preds[[1]] + t.fe.fix))
         r.v = tibble::tibble(
-          c = link$inv(mean(prf.preds[[1]] + t.fe.fix)),
-          c.low = link$inv(mean(prf.preds[[1]] - ses * q.val + t.fe.fix)),
-          c.high = link$inv(mean(prf.preds[[1]] + ses * q.val + t.fe.fix)),
+          c = mean(link$inv(beta.frame[[1]]), na.rm = T),
+          c.low = mean(link$inv(beta.frame[[1]] - ci), na.rm = T),
+          c.high = mean(link$inv(beta.frame[[1]] + ci), na.rm = T),
           p.value = p.value
         )
+        # r.v = tibble::tibble(
+        #   c = link$inv(mean(beta.frame[[1]], na.rm = T)),
+        #   c.low = link$inv(mean(beta.frame[[1]] - ci, na.rm = T)),
+        #   c.high = link$inv(mean(beta.frame[[1]] + ci, na.rm = T)),
+        #   p.value = p.value
+        # )
       }
-
-      # get the invlink for the beta
-      # linkbeta = link$link(abs(beta))
-
-      # get table
-      # r.v = tibble::tibble(c = beta, c.low = link$inv(sign(beta) * linkbeta - abs(linkbeta) * ci), c.high = link$inv(sign(beta) * linkbeta + abs(linkbeta) * ci), p.value = p.value)
 
       # round
       r.v = dplyr::mutate_if(r.v, is.numeric, round, 3)
@@ -1525,79 +1616,28 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
       return(r.v)
     }
 
-    # # get the difference
-    # pred_to_contrast = function(x, pr.temp, t.preds) {
-    #   # get the length
-    #   len = length(x)
-    #
-    #   # now set the contrast
-    #   if(len == 2) { # compare two values
-    #     r = list(full = pr.temp[[x[1]]]$full - pr.temp[[x[2]]]$full,
-    #              zero = pr.temp[[x[1]]]$zero - pr.temp[[x[2]]]$zero)
-    #     response.diff = t.preds$c[x[1]] - t.preds$c[x[2]]
-    #   } else if(len == 4) { # compare difference between two values
-    #     r = list(full = (pr.temp[[x[1]]]$full - pr.temp[[x[2]]]$full) - (pr.temp[[x[3]]]$full - pr.temp[[x[4]]]$full),
-    #              zero = (pr.temp[[x[1]]]$zero - pr.temp[[x[2]]]$zero) - (pr.temp[[x[3]]]$zero - pr.temp[[x[4]]]$zero))
-    #     response.diff = (t.preds$c[x[1]] - t.preds$c[x[2]]) - (t.preds$c[x[3]] - t.preds$c[x[4]])
-    #   } else { # unknown
-    #     r = NULL
-    #     response.diff = NULL
-    #   }
-    #
-    #   # return
-    #   return(list(contrast = r, beta = response.diff))
-    # }
-
-    # changed flow:
-    # - get betas for all predictions
-    # - get standard errors for betas and differences in beta with all non prediction variables set to zero so we dont include their covariance
-
     # get predictions
     pr.temp = lapply(dplyr::group_split(dplyr::rowwise(raw.preds)), create_hypothesis_data, data = data, formula = formula, t.coef = t.coef)
 
     # produce the predictions
     t.preds = lapply(raw.preds$.prediction.id, function(x) pr.temp[x])
-    t.preds = lapply(t.preds, create_linear_values2, t.coef = t.coef, t.vcov = t.vcov, link.fe.fix = link.fe.fix)
+    t.preds = lapply(t.preds, create_linear_values, t.coef = t.coef, t.vcov = t.vcov, link = link, link.fe.fix = link.fe.fix)
 
     # turn into a data frame
     t.preds = dplyr::bind_cols(dplyr::select(raw.preds, -.name), dplyr::bind_rows(t.preds))
 
     # produce the contrasts
     t.contr = lapply(raw.contr, function(x) pr.temp[x])
-    t.contr = lapply(t.contr, create_linear_values2, t.coef = t.coef, t.vcov = t.vcov, link.fe.fix = link.fe.fix)
+    t.contr = lapply(t.contr, create_linear_values, t.coef = t.coef, t.vcov = t.vcov, link = link, link.fe.fix = link.fe.fix)
 
     # turn into a data frame
     t.contr = dplyr::select(dplyr::mutate(dplyr::bind_rows(t.contr, .id = ".contrast"), .prediction.id = sapply(raw.contr, paste, collapse = ", ")), .contrast, .prediction.id, dplyr::everything())
-
-    # # produce the linear prediction for each component of the hypothesis -- returned in the predictions component
-    # t.preds = lapply(pr.temp, create_linear_values, model = model, t.vcov = t.vcov, link.fe.fix = link.fe.fix, t.coef = t.coef)
-    #
-    # # make into a data frame
-    # t.preds = dplyr::bind_cols(dplyr::select(raw.preds, -.name), dplyr::bind_rows(t.preds))
-    #
-    # # get contrasts
-    # t.contr = lapply(raw.contr, function(x) {
-    #   # get contrast
-    #   t.contr = pred_to_contrast(x = x, pr.temp = pr.temp, t.preds = t.preds)
-    #
-    #   # produce the contrasts
-    #   t.contr = create_linear_values(pr.d = t.contr$contrast, model = model, t.vcov = t.vcov, link.fe.fix = link.fe.fix, t.coef = t.coef, response.diff = t.contr$beta)
-    #
-    #   # set prediction id
-    #   t.contr$.prediction.id = paste(x, collapse = ", ")
-    #
-    #   # return
-    #   return(t.contr)
-    # })
-    #
-    # # turn into a dataframe
-    # t.contr = dplyr::select(dplyr::bind_rows(t.contr, .id = ".contrast"), .contrast, .prediction.id, dplyr::everything())
   } else {
     t.preds = t.contr = NULL
   }
 
-  # get coefficients
-  t.coefs = ct_to_out(model, cluster)$output
+  # get coefficients -- pass along a corrected vcov if we have one
+  t.coefs = ct_to_out(model, cluster, vcov = vcov)$output
 
   # predictions and contrasts
   r = list(coefficients = t.coefs, predictions = t.preds, contrasts = t.contr)
@@ -1627,7 +1667,7 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
 #' @examples
 #' results(object = output, predictions = main.predictions)
 #'
-results = function(object, predictions = NULL, method = c("observed values", "mean"), times = NULL, draws = 1000, .full.matrix = F) {
+results = function(object, predictions = NULL, method = c("observed values", "mean"), response = T, times = NULL, draws = 1000, .full.matrix = F, ci = 0.95, hdi = T) {
   ## get needed variables
 
   # get results from the model run
@@ -1689,7 +1729,7 @@ results = function(object, predictions = NULL, method = c("observed values", "me
     r.coefs = results_coefficients(obj.formula = obj$obj.formula, obj.draws = obj$obj.draws, obj.data = obj$obj.data)
 
     # summarize to get coefficient values
-    r.coefs = summarize_interval(r.coefs)
+    r.coefs = summarize_interval(r.coefs, .ci = ci, .hdi = hdi)
 
     # return
     return(r.coefs)
@@ -1713,11 +1753,11 @@ results = function(object, predictions = NULL, method = c("observed values", "me
     ## A PROBLEM IS THAT pr$data can have negative values for a variable that is being logged, etc. -- this breaks "make_model_frame"
 
     # run through the list for predictions - get predictions -- mvmer uses the full draws object so just pass that even though we made it nice above
-    predict.df = lapply(1:length(obj.info), function(m) results_predictions(object = object, pr = pr[[m]], obj.draws = obj.draws, method = method, draws = draws, times = times, m = m))
+    predict.df = lapply(1:length(obj.info), function(m) results_predictions(object = object, pr = pr[[m]], obj.draws = obj.draws, method = method, draws = draws, times = times, m = m, response = response))
     names(predict.df) = names(obj.info)
 
     # produce predictions that include the prediction id
-    r.preds = lapply(predict.df, function(x) summarize_interval(x, .grouping = c("prob")))
+    r.preds = lapply(predict.df, function(x) summarize_interval(x, .grouping = c("prob"), .ci = ci, .hdi = hdi))
 
     # get contrasts
     contrast.df = lapply(names(predict.df), function(x) results_contrasts(pr[[x]], predict.df[[x]]))
@@ -1726,7 +1766,7 @@ results = function(object, predictions = NULL, method = c("observed values", "me
     # summarize
     r.contr = lapply(names(contrast.df), function(x) {
       # create contrast
-      t.contr = summarize_interval(contrast.df[[x]], .grouping = c("prob"))
+      t.contr = summarize_interval(contrast.df[[x]], .grouping = c("prob"), .ci = ci, .hdi = hdi)
 
       # add prediction info
       pred.vals = lapply(t.contr$.prediction.id, function(pred.id) {
@@ -1742,8 +1782,10 @@ results = function(object, predictions = NULL, method = c("observed values", "me
           # set column names
           colnames(r) = paste0("v", if(id %in% c(1, 2)) 1 else 2, ".", if(id %in% c(1, 3)) "high" else "low", ".p", 1:ncol(r))
 
+
+
           # make it a character so we can stack the return
-          dplyr::mutate_all(r, as.character)
+          dplyr::mutate_all(r, function(x) if(is.list(x) && is.numeric(unlist(x))) as.character(round(mean(unlist(x), na.rm = T), 2)) else as.character(x))
         })
       })
 
@@ -1817,7 +1859,7 @@ results = function(object, predictions = NULL, method = c("observed values", "me
 #' @examples
 #' results_mediation(m.mediator, m.outcome, predictions = predictions.mediation)
 #'
-results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, draws = 1000, .outcome = NULL) {
+results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, draws = 1000, .outcome = NULL, .mediator.name = NULL) {
   # mediation analysis using posterior distributions
   # the name of the mediator in m.med should be the same as in m.out + predictions should be in both -- add checks
   # needs a non-survival model upfront but can work with anything at the back
@@ -1837,12 +1879,21 @@ results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, d
   # we should take into account uncertainty in this when carrying through our estimate of the indirect effect -- so if the treatment on the mediator is insignificant this needs to be accounted for
   # this is probably why our CIs are a little too low
 
-  # create a prediction list that allows sampling (instead of a single value we pass it the distribution of values identified)
-  mediation.var.name = all.vars(rlang::f_lhs(m.mediator$formula)) # allows us to have a transformation on the DV for the mediator -- still doesnt take the transformation into account -- should fix!!
+  # get the mediator name automatically
+  if(is.null(.mediator.name)) {
+    mediation.var.name = all.vars(rlang::f_lhs(m.mediator$formula)) # allows us to have a transformation on the DV for the mediator -- still doesnt take the transformation into account -- should fix!!
+  } else {
+    # set it manually
+    mediation.var.name = .mediator.name
+  }
+
+  # create a prediction list that allows sampling (instead of a single value we pass it the distribution of values identified) -- sometimes this can create values that are not allowed in variable transforms in the outcome
   pr.mat = matrix(effect.mediator$predictions.matrix$prob, ncol = dplyr::n_distinct(effect.mediator$predictions.matrix$.prediction.id))
   pr.mediator = if(ncol(pr.mat) == 4) list(list(pr.mat[, 1] - pr.mat[, 2], pr.mat[, 3] - pr.mat[, 4])) else list(list(pr.mat[, 1], pr.mat[, 2])) # we either have a diff or a diff-in-diff
   names(pr.mediator) = mediation.var.name
   pr.mediator =  do.call(pr_list, pr.mediator)
+
+  # for frequentist models --> could sample variable from a normal distribution with a known mean/sd
 
   # # create predictions (using pr_list) for mediator based on the above results (the change in the mediator that results from the treatment predictions)
   # pr.mediator = list(effect.mediator$predictions$c)
@@ -1854,9 +1905,12 @@ results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, d
 
   # when getting results we could try sample from the treatment effect distribution instead of taking point estimates -- effect.mediator$predictions.matrix (the prediction ids for the contrast)
 
-
   # get raw data on mediation effect -- we need to bring in uncertainty about the effect of the treatment on mediator when producing predictions
-  effect.outcome = results(object = m.outcome, predictions = c(predictions, pr.mediator), times = times, draws = draws, .full.matrix = T)
+  # results has an issue when it is trying to produce estimates for both a plain prediction and a prediction based on a distribution
+  effect.outcome = results(object = m.outcome, predictions = predictions, times = times, draws = draws, .full.matrix = T)
+  effect.med.outcome = results(object = m.outcome, predictions = pr.mediator, times = times, draws = draws, .full.matrix = T)
+
+  ## FOR SOME REASON THE DIRECT EFFECT SEEMS TO HAVE INFLATED STANDARD ERRORS FIX THIS!!!!
 
   # identify pairs -- this is the prediction for the treatment paired with the prediction for the mediator caused by the treatment
   # could modify to rely on the structure predictions function instead of hand coding here
@@ -1895,7 +1949,7 @@ results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, d
     direct = effect.outcome$contrasts.matrix$prob[effect.outcome$contrasts.matrix$.contrast == treat.contrast]
 
     # get the effect of the mediator on the outcome due to the effect of the treatment
-    indirect = effect.outcome$contrasts.matrix$prob[effect.outcome$contrasts.matrix$.contrast == med.contrast]
+    indirect = effect.med.outcome$contrasts.matrix$prob[effect.med.outcome$contrasts.matrix$.contrast == med.contrast]
 
     # get the total effect of the treatment and the mediator
     total = direct + indirect
@@ -1907,7 +1961,7 @@ results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, d
     length = max(length(mediator), length(direct), length(indirect), length(total))
 
     # return
-    return(tibble::tibble(.treatment = treat.contrast, .mediator = as.character(m.mediator$formula[2]), .mediator.contrast = med.contrast, .outcome = .outcome,
+    return(tibble::tibble(.treatment = treat.contrast, .mediator = mediation.var.name, .mediator.contrast = med.contrast, .outcome = .outcome,
                           direct.effect = vec_length(direct, length), indirect.effect = vec_length(indirect, length), total.effect = vec_length(total, length),
                           prop.mediated = vec_length(mediated, length), treat.on.mediator = vec_length(mediator, length)))
   })

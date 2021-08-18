@@ -121,6 +121,118 @@ test_survival = function() {
   # the bayesian version uses a different approach for the baseline hazard (and has priors) so results will vary slightly
 }
 
+# runs a test to compare the cumulative incidence of a survival model to a series of logits
+test_cumulative_logit = function() {
+  ## LOAD DATA
+
+  # load library
+  library(danalyze)
+
+  # get survival data
+  data(mela.pop, package = "timereg")
+
+  # formula -- the data has fractional stop times, which wont work for our purposes so just use start + 1
+  mela.pop$stop2 = mela.pop$start + 1
+
+  # and set the actual formula
+  f = survival::Surv(start, stop2, status) ~ sex + log1p(age) + rate
+
+
+  ## RUN COXPH MODEL
+
+  # run survival model
+  m.surv = survival::coxph(formula = f, data = mela.pop, cluster = id, x = T)
+  summary(m.surv)
+
+  m.surv.timereg = timereg::timecox(formula = f, data = mela.pop)
+
+  # check proportional hazards
+  cox.zph(m.surv) # standard test says that they are all fine
+  summary(m.surv.timereg) # this test says that 'sex' is fine but that rate is not, which matches what we find with our linear model
+  plot(m.surv.timereg) # plot shows that hazards are not proporitonal -- sex looks good but rate shows a rise and then a huge dip as does our linear model
+
+  # run package version
+  out = analysis(runs = 1000, formula = f, data = mela.pop, cluster = ~ id)
+
+  # create a basic set of predictions for the normal survival model
+  pr.basic = bind_rows(tibble(sex = 2, age = mean(mela.pop$age), rate = mean(mela.pop$rate), start = 0, stop2 = 1:10, status = 0),
+                       tibble(sex = 1, age = mean(mela.pop$age), rate = mean(mela.pop$rate), start = 0, stop2 = 1:10, status = 0))
+
+  # get the survival rate over time
+  r.basic = predict(m.surv, newdata = pr.basic, type = "survival", se.fit = T)
+
+  # turn it into cumulative incidence (the CIF common in interpreting competing risks models)
+  tibble(
+    .time = c(1:10, 1:10),
+    c = 1 - r.basic$fit,
+    c.low = c - qnorm(0.975) * r.basic$se.fit,
+    c.high = c + qnorm(0.975) * r.basic$se.fit
+  )
+
+  # these basic predictions (which don't handle contrasts in a straightforward way can be compared to package predictions)
+
+  # predictions to run
+  main.pred = pr(sex = c(2, 1)) # pr(rate = quantile(mela.pop$rate, c(0.9, 0.1)))
+  # predictions from the package
+  res.surv = results(object = out, predictions = main.pred, times = 1:10)
+
+  # setup data for logit models
+
+  # helper function
+  within_time = function(x, t, outcome = 1) {
+    maxl = length(x)
+    sapply(1:maxl, function(z) {
+      maxt = min(maxl, z + t)
+      if(any(na.omit(x[z:maxt]) == outcome)) return(outcome) # we know it happened
+      if(z + t > maxt || any(is.na(x[1:maxt]))) return(NA) # these are outcomes we dont know -- they havent happened yet but could in a time we dont record data for
+      return(0) # we know it didnt happen
+    })
+  }
+
+  # we will create 10 dependent variables that record the occurrence of the outcome within X time ('status_c0' is identical to 'status')
+  mela.pop = mela.pop %>% arrange(id, start, stop2) %>% group_by(id) %>%
+    mutate(across(status, .fns = list(c0 = ~ within_time(.x, 0), c1 = ~ within_time(.x, 1), c2 = ~ within_time(.x, 2), c3 = ~ within_time(.x, 3), c4 = ~ within_time(.x, 4),
+                                      c5 = ~ within_time(.x, 5), c6 = ~ within_time(.x, 6), c7 = ~ within_time(.x, 7), c8 = ~ within_time(.x, 8), c9= ~ within_time(.x, 9))))
+
+  # run a linear model (on binomial data)
+  res.logit = lapply(0:9, function(i) {
+    # set the formula
+    f.t = update(f, as.formula(paste0("status_c", i, " ~ .")))
+
+    # run model -- binomial outcome but we are running it using a gaussian family -- could also just use lm but this makes it easier to check what happens when you swap family
+    out.t = glm(formula = f.t, data = mela.pop, family = gaussian)
+
+    # get prediction -- the SE is pretty large when using just id, but that is likely the more accurate assessment
+    r.t = get_prediction_frequentist(out.t, cluster = ~ id, predictions = main.pred)
+
+    # save
+    r.t
+  })
+
+  # check
+  out.logit = map_dfr(res.logit, "contrasts", .id = ".time")
+  out.logit$.time = as.numeric(out.logit$.time)
+  out.logit
+
+  # compare to the survival model
+  res.surv$contrasts
+
+  # set plot data
+  out.logit$.type = "Cumulative Linear"
+  res.surv$contrasts$.type = "Survival"
+  out.all = bind_rows(out.logit %>% select(.type, .time, c:c.high), res.surv$contrasts %>% select(.type, .time, c:c.high))
+
+  # plot
+  ggplot(out.all, aes(x = .time, y = c, ymin = c.low, ymax = c.high)) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey80", size = 1.5) +
+    geom_ribbon(aes(fill = .type), alpha = 0.4) + geom_line(aes(color = .type), size = 1) +
+    scale_fill_manual("Model Type", values = c("orangered", "steelblue4")) + scale_color_manual("Model Type", values = c("orangered", "steelblue4")) +
+    scale_y_continuous(labels = scales::percent_format()) +
+    theme_minimal() + labs(x = "Time", y = "Change in Cumulative Survival, Male vs. Female")
+
+  # the lines are very similar -- this only holds as long as proportional hazards is not violated
+}
+
 # runs a test for mediation analysis -- compares output from this package to 'mediation'
 test_mediation = function() {
   ## SETUP DATA

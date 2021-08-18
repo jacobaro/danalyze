@@ -204,7 +204,7 @@ create_values = function(x, .quantile = c(0.975, 0.025), .places = 2) {
 #'   For a character vector this returns unique values.
 #' @export
 #'
-ct_to_out = function(m, cluster = NULL, drop.factor = T, .level = 0.95, .round = 3) {
+ct_to_out = function(m, cluster = NULL, vcov = NULL, drop.factor = T, .level = 0.95, .round = 3) {
   # get coeftest
   if(any(c("lmerMod", "glmerMod", "lmerModLmerTest", "glmerModLmerTest") %in% class(m))) {
     mt = as.data.frame(summary(m)$coefficients)
@@ -212,12 +212,16 @@ ct_to_out = function(m, cluster = NULL, drop.factor = T, .level = 0.95, .round =
     colnames(mt) = c("Estimate", "Std. Error", "t value", "Pr(>|t|)")
     mt = as.matrix(mt)
   } else {
-    mt = lmtest::coeftest(m, get_vcov(m, cluster = cluster))
+    if(!is.null(vcov)) {
+      mt = lmtest::coeftest(m, vcov)
+    } else {
+      mt = lmtest::coeftest(m, get_vcov(m, cluster = cluster, iv.fix = F))
+    }
   }
 
   # drop factors if desired
   if(drop.factor) {
-    mt = mt[!stringr::str_detect(rownames(mt), "factor\\("), ]
+    mt = mt[!stringr::str_detect(rownames(mt), "factor\\("), , drop = F] # make sure it stays a matrix
     class(mt) = "coeftest"
   }
 

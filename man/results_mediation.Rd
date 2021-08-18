@@ -10,7 +10,8 @@ results_mediation(
   predictions,
   times = NULL,
   draws = 1000,
-  .outcome = NULL
+  .outcome = NULL,
+  .mediator.name = NULL
 )
 }
 \arguments{

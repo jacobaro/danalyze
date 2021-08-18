@@ -11,7 +11,8 @@ results_predictions(
   method = c("observed values", "mean"),
   draws = 1000,
   times = NULL,
-  m = NULL
+  m = NULL,
+  response = T
 )
 }
 \arguments{

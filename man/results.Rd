@@ -8,9 +8,12 @@ results(
   object,
   predictions = NULL,
   method = c("observed values", "mean"),
+  response = T,
   times = NULL,
   draws = 1000,
-  .full.matrix = F
+  .full.matrix = F,
+  ci = 0.95,
+  hdi = T
 )
 }
 \arguments{

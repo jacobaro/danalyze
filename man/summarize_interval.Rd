@@ -7,6 +7,7 @@
 summarize_interval(
   data,
   .ci = 0.95,
+  .hdi = T,
   .grouping = c(".prediction.id", "prob"),
   .round = 3
 )

@@ -117,6 +117,10 @@ pr_list = function(..., .constant = NULL, .diff.in.diff = NULL, .add = NULL) {
   return(pr.full)
 }
 
+#' @rdname pr_list
+#' @export
+pr <- pr_list
+
 #' Function to resample a dataframe that takes into account user-specified weights and clusters.
 #'
 #' This function allows you to resample a dataframe for analysis.
@@ -359,11 +363,8 @@ run_all_replicates = function(replicates, boot_function, N = length(replicates),
 
   # error handling function
   has_error = function(e) {
-    # say error
-    cat(e)
-
-    # return null
-    return(NULL)
+    # return error
+    return(e)
   }
 
   # run the bootstrap function
@@ -594,7 +595,7 @@ analysis = function(runs, formula, main.ivs = NULL, data, cluster = NULL, weight
   # need to add some error checking -- e.g., adding priors to non-bayesian analysis, etc.
 
   # select only relevant variables from data -- need to also include weights since we might have different row length after sub-setting
-  data = dplyr::select(data, all.vars(formula), all.vars(cluster))
+  data = dplyr::select(dplyr::ungroup(data), all.vars(formula), all.vars(cluster))
 
   # identify complete cases
   data.present = complete.cases(data)
