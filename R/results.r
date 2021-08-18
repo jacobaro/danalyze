@@ -756,18 +756,23 @@ get_data = function(object, data = NULL) {
   # set default
   data = NULL
 
-  # get data from object
-  if(!is.null(object$data)) {
-    data = object$data
-  } else if(!is.null(object$call$data)) {
-    data = eval(object$call$data)
-  }else if(!is.null(object@call$data)) {
-    data = eval(object@call$data)
-  }
+  # do we have an sf object
+  if("S4" %in% typeof(object)) {
+    if(!is.null(object@call$data)) {
+      data = eval(object@call$data)
+    }
+  } else {
+    # get data from object
+    if(!is.null(object$data)) {
+      data = object$data
+    } else if(!is.null(object$call$data)) {
+      data = eval(object$call$data)
+    }
 
-  # need to deal with data subsets for the model run
-  if(!is.null(object$obs_selection$obsRemoved)) {
-    data = data[object$obs_selection$obsRemoved, ]
+    # need to deal with data subsets for the model run
+    if(!is.null(object$obs_selection$obsRemoved)) {
+      data = data[object$obs_selection$obsRemoved, ]
+    }
   }
 
   # return
@@ -902,10 +907,10 @@ get_coef = function(object) {
     coef = lme4::fixef(object)
   } else {
     coef = coef(object)
-  }
 
-  if(!is.null(object$iv) && object$iv) {
-    names(coef) = gsub("^fit_", "", names(coef))
+    if(!is.null(object$iv) && object$iv) {
+      names(coef) = gsub("^fit_", "", names(coef))
+    }
   }
 
   # return
@@ -1303,6 +1308,11 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
   # fe fix defaults to zero
   link.fe.fix = 0
 
+  # dont do fe fix with RE models
+  if("S4" %in% typeof(model)) {
+    fe.fix = F
+  }
+
   # fixed effects from model (or random effects, or baseline hazard, etc.)
   if(fe.fix) {
     # no predict method so try to generate from fitted values -- putting linear predictors first allows us to get the link values if possible before values on the response scale
@@ -1328,7 +1338,7 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
   # get predictions if they are specified
   if(!is.null(predictions)) {
     # additive or multiplicative
-    is.hazard = if_else(any(c("coxme", "coxph") %in% class(model)), 1, 0)
+    is.hazard = dplyr::if_else(any(c("coxme", "coxph") %in% class(model)), 1, 0)
 
     # combine all predictions
     raw.preds = suppressWarnings(tibble::rownames_to_column(dplyr::distinct(dplyr::bind_rows(vctrs::vec_c(predictions))), var = ".prediction.id"))
