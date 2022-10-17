@@ -1,8 +1,8 @@
 Package: danalyze
 Type: Package
-Date: 2020-08-10
+Date: 2021-08-18
 Title: Danalyze: Automated Analysis Functions
-Version: 0.1.3
+Version: 0.14.1
 Author: Jacob A
 Maintainer: Jacob A <jacobaro@umd.edu>
 Depends: R (>= 3.4.0), tidyverse, rstanarm, doSNOW, foreach, e1071, lme4, survival, coxme

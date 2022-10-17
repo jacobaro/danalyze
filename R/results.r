@@ -400,12 +400,27 @@ summarize_interval = function(data, .ci = 0.95, .hdi = T, .grouping = c(".predic
   r = dplyr::filter(r, !is.na(prob))
 
   # summarize
-  if(.hdi) {
+  if(.hdi == T) {
     # summarize
     r = dplyr::summarize(
       r,
       q = list(bayestestR:::.hdi(prob, ci = .ci, verbose = F)),
-      c = median(prob),
+      c = mean(prob),
+      c.low = q[[1]][[2]],
+      c.high = q[[1]][[3]],
+      p.value = min(dplyr::if_else(c < 0, 1 - ecdf(prob)(0), ecdf(prob)(0)) * 2, 1),
+      draws = length(prob),
+      .groups = "keep"
+    )
+
+    # drop q
+    r = dplyr::select(r, -q)
+  } else if(.hdi == "bci") {
+    # summarize
+    r = dplyr::summarize(
+      r,
+      q = list(bayestestR:::.bci(prob, ci = .ci, verbose = F)),
+      c = mean(prob),
       c.low = q[[1]][[2]],
       c.high = q[[1]][[3]],
       p.value = min(dplyr::if_else(c < 0, 1 - ecdf(prob)(0), ecdf(prob)(0)) * 2, 1),
@@ -419,7 +434,7 @@ summarize_interval = function(data, .ci = 0.95, .hdi = T, .grouping = c(".predic
     # summarize
     r = dplyr::summarize(
       r,
-      c = median(prob),
+      c = mean(prob),
       c.low = quantile(prob, (1 - .ci) / 2),
       c.high = quantile(prob, 1 - ((1 - .ci) / 2)),
       p.value = min(dplyr::if_else(c < 0, 1 - ecdf(prob)(0), ecdf(prob)(0)) * 2, 1),
@@ -510,8 +525,37 @@ structure_predictions = function(formula, data, predictions, method) {
     if(dplyr::first(method) == "observed values") {
       data.prediction = data.all
     } else {
+      # function to collapse values in our dataset so we can avoid problems of fractional numbers for fixed/random effects
+      collapse_values = function(x) {
+        # remove NAs
+        x = na.omit(x)
+
+        # nothing left, return NA
+        if(length(x) < 1) {
+          return(NA)
+        }
+
+        # a categorical variable
+        if(!is.numeric(x)) {
+          r = unique(x)
+          return(r[which.max(tabulate(match(x, r)))])
+        }
+
+        # just return median -- easier and works for all numeric
+        return(median(x))
+
+        # # integer values so take median
+        # if(any(x %% 1 == 0)) {
+        #   return(median(x))
+        # }
+        #
+        # # numeric
+        # return(mean(x))
+
+      }
+
       # use mean for numeric values and mode otherwise
-      data.prediction = dplyr::summarize_all(data.all, function(x) if (is.numeric(x)) mean(x, na.rm = T) else { r = unique(x); r[which.max(tabulate(match(x, r)))] })
+      data.prediction = dplyr::summarize_all(data.all, collapse_values)
     }
 
     # expand so that we have all observed values for each prediction
@@ -803,7 +847,7 @@ get_link = function(object) {
 
   # special for lme4
   if(any(c("lmerMod", "glmerMod") %in% object.class)) {
-    link = do.call(as.character(object@call$family), list())
+    link = family(object)
     return(list(link = link$linkfun, inv = link$linkinv))
   } else if(any(c("coxph", "coxme") %in% object.class)) {
     return(list(link = log, inv = exp))
@@ -814,8 +858,18 @@ get_link = function(object) {
     return(invlink)
   }
 
-  # return the link
-  if(!is.null(object$family$linkinv)) {
+  # is it a description? if so get the family based on character name
+  if(typeof(object$family) == "character") {
+    link = switch(object$family,
+                  "gaussian" = gaussian(),
+                  "logit" = binomial(),
+                  "probit" = binomial(link = "probit"),
+                  "negbin" = MASS:::neg.bin(1))
+    return(list(link = link$linkfun, inv = link$linkinv))
+  }
+
+  # return the link -- checks to make sure it is a list
+  if(typeof(object$family) == "list" && !is.null(object$family$linkinv)) {
     link = object$family
     return(list(link = link$linkfun, inv = link$linkinv))
   }
@@ -869,6 +923,10 @@ get_vcov = function(object, cluster = NULL, iv.fix = T) {
     if(!is.null(object$iv) && object$iv && iv.fix) {
       rownames(vcov) = gsub("^fit_", "", rownames(vcov))
       colnames(vcov) = gsub("^fit_", "", colnames(vcov))
+    }
+    # fix extra parameters such as theta
+    if(ncol(vcov) > length(names(coef(object)))) {
+      vcov = vcov[names(coef(object)), names(coef(object))]
     }
   } else if(any(c("lmerMod", "glmerMod") %in% class(object))) {
     # random effects models should account for the clustered data structure in the random effects terms
@@ -1093,7 +1151,7 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
     }
 
     # set response type
-    if(response) {
+    if(is.list(response) || response) {
       type = "cdf"
     } else {
       type = "loghaz" # the linear predictors (exponentiate to get the  hazard)
@@ -1110,7 +1168,7 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
   } else {
     # using rstanarm built-in function -- each row is a draw, each column is a row in the prediction frame -- pp_eta gets the linear predictor, pp_args gets the inverse link of the LP
 
-    # TODO: need to update to make it work with random effects -- requires setting is.mer
+    # TODO: need to update to make it work with random effects -- requires setting is.mer -- simple fix is to make the class not "lmerMod"
 
     # first get formatted data -- basically model.matrix -- average over random effects
     pp.data = rstanarm:::pp_data(object, pr$data, re.form = NA, offset = rep(0, nrow(pr$data)), m = m)
@@ -1151,7 +1209,7 @@ results_predictions = function(object, pr, obj.draws, method = c("observed value
 
 
     # linear predictors or response scale
-    if(response) {
+    if(is.list(response) || response) {
       # get the linear predictors and then transform by the inverse link function -- all pretty basic
       pp.args = rstanarm:::pp_args(object, pp.eta, m = m)
       mu = pp.args$mu
@@ -1273,15 +1331,15 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
   data = data[complete.cases(data[, all.vars(formula)]), ]
 
   # get the inverse model link
-  if(is.function(response) || (response != F && !is.null(response))) {
+  if(is.list(response) || (response != F && !is.null(response))) {
     # get the family link/inv
     link = get_link(model)
 
     # if we want to un-transform the dv wrap the link in the response inv
-    if(is.function(response)) {
+    if(is.list(response)) {
       link.t.link = link$link
       link.t.inv = link$inv
-      link = list(link = function(x) response(link.t.link(x)), inv = function(x) response(link.t.inv(x)))
+      link = list(link = function(x) response$link(link.t.link(x)), inv = function(x) response$inv(link.t.inv(x)))
     }
   } else {
     # no link
@@ -1408,6 +1466,7 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
       d.obs.zero[!is.finite(d.obs.zero)] = 0
 
       # actually make the zero -- this is the most robust approach ive been able to devise
+      # this is not setting the interaction to zero
       d.obs.zero = d.obs.full - d.obs.zero
 
       # return
@@ -1415,15 +1474,13 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
 
       # just make sure we are only selecting coefficients in our model
       d.obs.full = d.obs.full[, names(t.coef)]
-      d.obs.zero = d.obs.zero[1, names(t.coef)]
+      d.obs.zero = d.obs.zero[, names(t.coef)]
 
       # if using mean value then get means of d.obs
       if(type.pred == "mean") {
         d.obs.full = matrix(colMeans(d.obs.full), nrow = 1)
+        d.obs.zero = matrix(colMeans(d.obs.zero), nrow = 1)
       }
-
-      # turn the zero frame into a matrix
-      d.obs.zero = matrix(d.obs.zero, nrow = 1)
 
       # return
       return(list(full = d.obs.full, zero = d.obs.zero))
@@ -1550,20 +1607,20 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
         zero.frame = prf[[1]]$zero
       }
 
+      # take the mean of the zero frame
+      zero.frame = matrix(colMeans(zero.frame), nrow = 1)
+
       # get transposed matrix product
       tcp = tcrossprod(as.matrix(t.vcov), zero.frame)
 
       # get the standard error
       ses = sqrt(diag(zero.frame %*% tcp))
 
-      # t-value
+      # number of standard deviations
       q.val = qnorm(1 - (1 - signif) / 2)
 
       # get the confidence interval
       ci = abs(ses) * q.val
-
-      # get ci portion
-      ci.portion = abs(ci / as.numeric(zero.frame %*% t.coef))
 
       # set the p-value
       p.value = 2 * (1 - (1 - pnorm(-abs(as.numeric(zero.frame %*% t.coef)) / ses)))
@@ -1571,53 +1628,124 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
       # set the operator
       `%op%` = if(is.hazard) `/` else `-`
 
-      # get the return values
-      if(length(prf) > 2) {
-        r.v = tibble::tibble(
-          c = (mean(link$inv(beta.frame[[1]]), na.rm = T) %op% mean(link$inv(beta.frame[[2]]), na.rm = T)) %op%
-            (mean(link$inv(beta.frame[[3]]), na.rm = T) %op% mean(link$inv(beta.frame[[4]]), na.rm = T)),
-          c.low = (mean(link$inv(beta.frame[[1]] - ci / 4), na.rm = T) %op% mean(link$inv(beta.frame[[2]] + ci / 4), na.rm = T)) %op%
-            (mean(link$inv(beta.frame[[3]] + ci / 4), na.rm = T) %op% mean(link$inv(beta.frame[[4]] - ci / 4), na.rm = T)),
-          c.high = (mean(link$inv(beta.frame[[1]] + ci / 4), na.rm = T) %op% mean(link$inv(beta.frame[[2]] - ci / 4), na.rm = T)) %op%
-            (mean(link$inv(beta.frame[[3]] - ci / 4), na.rm = T) %op% mean(link$inv(beta.frame[[4]] + ci / 4), na.rm = T)),
-          p.value = p.value
-        )
+      # get return value
+      if(length(prf) == 1) {
         # r.v = tibble::tibble(
-        #   c = (link$inv(mean(beta.frame[[1]], na.rm = T)) - link$inv(mean(beta.frame[[2]], na.rm = T))) -
-        #     (link$inv(mean(beta.frame[[3]], na.rm = T)) - link$inv(mean(beta.frame[[4]], na.rm = T))),
-        #   c.low = (link$inv(mean(beta.frame[[1]] - ci / 4, na.rm = T)) - link$inv(mean(beta.frame[[2]] + ci / 4, na.rm = T))) -
-        #     (link$inv(mean(beta.frame[[3]] + ci / 4, na.rm = T)) - link$inv(mean(beta.frame[[4]] - ci / 4, na.rm = T))),
-        #   c.high = (link$inv(mean(beta.frame[[1]] + ci / 4, na.rm = T)) - link$inv(mean(beta.frame[[2]] - ci / 4, na.rm = T))) -
-        #     (link$inv(mean(beta.frame[[3]] - ci / 4, na.rm = T)) - link$inv(mean(beta.frame[[4]] + ci / 4, na.rm = T))),
+        #   c = sapply(beta.frame, function(x) mean(link$inv(x), na.rm = T)),
+        #   c.low = sapply(beta.frame, function(x) mean(link$inv(x - ci), na.rm = T)),
+        #   c.high = sapply(beta.frame, function(x) mean(link$inv(x + ci), na.rm = T)),
         #   p.value = p.value
         # )
-      } else if(length(prf) > 1) {
         r.v = tibble::tibble(
-          c = mean(link$inv(beta.frame[[1]]), na.rm = T) %op% mean(link$inv(beta.frame[[2]]), na.rm = T),
-          c.low = mean(link$inv(beta.frame[[1]] - ci / 2), na.rm = T) %op% mean(link$inv(beta.frame[[2]] + ci / 2), na.rm = T),
-          c.high = mean(link$inv(beta.frame[[1]] + ci / 2), na.rm = T) %op% mean(link$inv(beta.frame[[2]] - ci / 2), na.rm = T),
+          c = link$inv(sapply(beta.frame, function(x) mean(x, na.rm = T))),
+          c.low = link$inv(sapply(beta.frame, function(x) mean(x - ci, na.rm = T))),
+          c.high = link$inv(sapply(beta.frame, function(x) mean(x + ci, na.rm = T))),
           p.value = p.value
         )
-        # r.v = tibble::tibble(
-        #   c = link$inv(mean(beta.frame[[1]], na.rm = T)) - link$inv(mean(beta.frame[[2]], na.rm = T)),
-        #   c.low = link$inv(mean(beta.frame[[1]] - ci / 2, na.rm = T)) - link$inv(mean(beta.frame[[2]] + ci / 2, na.rm = T)),
-        #   c.high = link$inv(mean(beta.frame[[1]] + ci / 2, na.rm = T)) - link$inv(mean(beta.frame[[2]] - ci / 2, na.rm = T)),
-        #   p.value = p.value
-        # )
       } else {
+        # get the meaned and transformed linear predictor
+        lin.pred = link$inv(sapply(beta.frame, function(x) mean(x, na.rm = T)))
+        lin.pred.base = sapply(beta.frame, function(x) mean(x, na.rm = T))
+
+        # the c value -- difference in difference, difference, or prediction
+        c.value = dplyr::case_when(length(prf) > 2 ~ (lin.pred[1] - lin.pred[2]) - (lin.pred[3] - lin.pred[4]), length(prf) > 1 ~ lin.pred[1] - lin.pred[2], T ~ lin.pred[1])
+        c.value.base = dplyr::case_when(length(prf) > 2 ~ (lin.pred.base[1] - lin.pred.base[2]) - (lin.pred.base[3] - lin.pred.base[4]), length(prf) > 1 ~ lin.pred.base[1] - lin.pred.base[2], T ~ lin.pred.base[1])
+
+        # get baseline
+        baseline = mean(lin.pred.base[switch(length(prf), '4' = 3:4, '2' = 2, '1' = 1)])
+
+        # get return value
         r.v = tibble::tibble(
-          c = mean(link$inv(beta.frame[[1]]), na.rm = T),
-          c.low = mean(link$inv(beta.frame[[1]] - ci), na.rm = T),
-          c.high = mean(link$inv(beta.frame[[1]] + ci), na.rm = T),
+          c = link$inv(baseline + c.value.base) - link$inv(baseline),
+          c.low = link$inv(baseline + c.value.base - ci) - link$inv(baseline),
+          c.high = link$inv(baseline + c.value.base + ci) - link$inv(baseline),
           p.value = p.value
         )
         # r.v = tibble::tibble(
-        #   c = link$inv(mean(beta.frame[[1]], na.rm = T)),
-        #   c.low = link$inv(mean(beta.frame[[1]] - ci, na.rm = T)),
-        #   c.high = link$inv(mean(beta.frame[[1]] + ci, na.rm = T)),
+        #   c = c.value,
+        #   c.low = mean(sapply(beta.frame, function(x) mean(link$inv(x - ci), na.rm = T))),
+        #   c.high = mean(sapply(beta.frame, function(x) mean(link$inv(x + ci), na.rm = T))),
+        #   p.value = p.value
+        # )
+        # r.v = tibble::tibble(
+        #   c = c.value,
+        #   c.low = c.value - (mean(lin.pred) - link$inv(link$link(mean(lin.pred)) - ci)),
+        #   c.high = c.value - (mean(lin.pred) - link$inv(link$link(mean(lin.pred)) + ci)),
         #   p.value = p.value
         # )
       }
+
+      # # get the return values
+      # if(length(prf) > 2) {
+      #   # r.v = tibble::tibble(
+      #   #   c = (mean(link$inv(beta.frame[[1]]), na.rm = T) %op% mean(link$inv(beta.frame[[2]]), na.rm = T)) %op%
+      #   #     (mean(link$inv(beta.frame[[3]]), na.rm = T) %op% mean(link$inv(beta.frame[[4]]), na.rm = T)),
+      #   #   c.low = (mean(link$inv(beta.frame[[1]] - ci / 4), na.rm = T) %op% mean(link$inv(beta.frame[[2]] + ci / 4), na.rm = T)) %op%
+      #   #     (mean(link$inv(beta.frame[[3]] + ci / 4), na.rm = T) %op% mean(link$inv(beta.frame[[4]] - ci / 4), na.rm = T)),
+      #   #   c.high = (mean(link$inv(beta.frame[[1]] + ci / 4), na.rm = T) %op% mean(link$inv(beta.frame[[2]] - ci / 4), na.rm = T)) %op%
+      #   #     (mean(link$inv(beta.frame[[3]] - ci / 4), na.rm = T) %op% mean(link$inv(beta.frame[[4]] + ci / 4), na.rm = T)),
+      #   #   p.value = mean(p.value)
+      #   # )
+      #   # r.v = tibble::tibble(
+      #   #   c = (link$inv(mean(beta.frame[[1]], na.rm = T)) - link$inv(mean(beta.frame[[2]], na.rm = T))) -
+      #   #     (link$inv(mean(beta.frame[[3]], na.rm = T)) - link$inv(mean(beta.frame[[4]], na.rm = T))),
+      #   #   c.low = (link$inv(mean(beta.frame[[1]] - ci / 4, na.rm = T)) - link$inv(mean(beta.frame[[2]] + ci / 4, na.rm = T))) -
+      #   #     (link$inv(mean(beta.frame[[3]] + ci / 4, na.rm = T)) - link$inv(mean(beta.frame[[4]] - ci / 4, na.rm = T))),
+      #   #   c.high = (link$inv(mean(beta.frame[[1]] + ci / 4, na.rm = T)) - link$inv(mean(beta.frame[[2]] - ci / 4, na.rm = T))) -
+      #   #     (link$inv(mean(beta.frame[[3]] - ci / 4, na.rm = T)) - link$inv(mean(beta.frame[[4]] + ci / 4, na.rm = T))),
+      #   #   p.value = p.value
+      #   # )
+      #   # r.v = tibble::tibble(
+      #   #   c = (link$inv(lin.pred[1]) - link$inv(lin.pred[2])) - (link$inv(lin.pred[3]) - link$inv(lin.pred[4])),
+      #   #   c.low = (link$inv(lin.pred[1] - ci.portion / 4) - link$inv(lin.pred[2] + ci.portion / 4)) - (link$inv(lin.pred[3] + ci.portion / 4) - link$inv(lin.pred[4] - ci.portion / 4)),
+      #   #   c.high = (link$inv(lin.pred[1] + ci.portion / 4) - link$inv(lin.pred[2] - ci.portion / 4)) - (link$inv(lin.pred[3] - ci.portion / 4) - link$inv(lin.pred[4] + ci.portion / 4)),
+      #   #   p.value = p.value
+      #   # )
+      #   r.v = tibble::tibble(
+      #     c = (lin.pred[1] - lin.pred[2]) - (lin.pred[3] - lin.pred[4]),
+      #     c.low = c - ci.portion * abs(c),
+      #     c.high = c + ci.portion * abs(c),
+      #     p.value = p.value
+      #   )
+      # } else if(length(prf) > 1) {
+      #   # r.v = tibble::tibble(
+      #   #   c = mean(link$inv(beta.frame[[1]]), na.rm = T) %op% mean(link$inv(beta.frame[[2]]), na.rm = T),
+      #   #   c.low = mean(link$inv(beta.frame[[1]] - ci / 2), na.rm = T) %op% mean(link$inv(beta.frame[[2]] + ci / 2), na.rm = T),
+      #   #   c.high = mean(link$inv(beta.frame[[1]] + ci / 2), na.rm = T) %op% mean(link$inv(beta.frame[[2]] - ci / 2), na.rm = T),
+      #   #   p.value = mean(p.value)
+      #   # )
+      #   # r.v = tibble::tibble(
+      #   #   c = link$inv(mean(beta.frame[[1]], na.rm = T)) - link$inv(mean(beta.frame[[2]], na.rm = T)),
+      #   #   c.low = link$inv(mean(beta.frame[[1]] - ci / 2, na.rm = T)) - link$inv(mean(beta.frame[[2]] + ci / 2, na.rm = T)),
+      #   #   c.high = link$inv(mean(beta.frame[[1]] + ci / 2, na.rm = T)) - link$inv(mean(beta.frame[[2]] - ci / 2, na.rm = T)),
+      #   #   p.value = p.value
+      #   # )
+      #   r.v = tibble::tibble(
+      #     c = lin.pred[1] - lin.pred[2],
+      #     c.low = c - ci.portion * abs(c),
+      #     c.high = c + ci.portion * abs(c),
+      #     p.value = p.value
+      #   )
+      # } else {
+      #   # r.v = tibble::tibble(
+      #   #   c = mean(link$inv(beta.frame[[1]]), na.rm = T),
+      #   #   c.low = mean(link$inv(beta.frame[[1]] - ci), na.rm = T),
+      #   #   c.high = mean(link$inv(beta.frame[[1]] + ci), na.rm = T),
+      #   #   p.value = mean(p.value)
+      #   # )
+      #   # r.v = tibble::tibble(
+      #   #   c = link$inv(mean(beta.frame[[1]], na.rm = T)),
+      #   #   c.low = link$inv(mean(beta.frame[[1]] - ci, na.rm = T)),
+      #   #   c.high = link$inv(mean(beta.frame[[1]] + ci, na.rm = T)),
+      #   #   p.value = p.value
+      #   # )
+      #   r.v = tibble::tibble(
+      #     c = lin.pred[1],
+      #     c.low = c - ci.portion * abs(c),
+      #     c.high = c + ci.portion * abs(c),
+      #     p.value = p.value
+      #   )
+      # }
 
       # round
       r.v = dplyr::mutate_if(r.v, is.numeric, round, 3)
@@ -1655,6 +1783,8 @@ get_prediction_frequentist = function(model, predictions = NULL, cluster = NULL,
   # return
   return(r)
 }
+
+#### IMPORTANT: make this work with LMER models!!
 
 #' Function to get results from an object returned by analysis.
 #'
@@ -1757,6 +1887,15 @@ results = function(object, predictions = NULL, method = c("observed values", "me
 
   # get structured predictions
   if(!is.null(predictions)) {
+    # get the inverse model link
+    if(is.list(response)) {
+      # link
+      link = list(link = response$link, inv = response$inv)
+    } else {
+      # no link
+      link = list(link = function(x) x, inv = function(x) x)
+    }
+
     # structure predictions data frame
     pr = lapply(obj.info, function(x) structure_predictions(formula = x$obj.formula, data = x$obj.data, predictions = predictions, method = method))
 
@@ -1765,6 +1904,9 @@ results = function(object, predictions = NULL, method = c("observed values", "me
     # run through the list for predictions - get predictions -- mvmer uses the full draws object so just pass that even though we made it nice above
     predict.df = lapply(1:length(obj.info), function(m) results_predictions(object = object, pr = pr[[m]], obj.draws = obj.draws, method = method, draws = draws, times = times, m = m, response = response))
     names(predict.df) = names(obj.info)
+
+    # transform the prediction using the link
+    predict.df = lapply(predict.df, function(x) { x$prob = link$inv(x$prob); x })
 
     # produce predictions that include the prediction id
     r.preds = lapply(predict.df, function(x) summarize_interval(x, .grouping = c("prob"), .ci = ci, .hdi = hdi))
@@ -1869,7 +2011,7 @@ results = function(object, predictions = NULL, method = c("observed values", "me
 #' @examples
 #' results_mediation(m.mediator, m.outcome, predictions = predictions.mediation)
 #'
-results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, draws = 1000, .outcome = NULL, .mediator.name = NULL) {
+results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, draws = 1000, .outcome = NULL, .mediator.name = NULL, .hdi = T) {
   # mediation analysis using posterior distributions
   # the name of the mediator in m.med should be the same as in m.out + predictions should be in both -- add checks
   # needs a non-survival model upfront but can work with anything at the back
@@ -1991,7 +2133,7 @@ results_mediation = function(m.mediator, m.outcome, predictions, times = NULL, d
   r = dplyr::select(r, .treatment, .effect, .mediator, .mediator.contrast, .outcome, prob)
 
   # summarize
-  r = summarize_interval(r)
+  r = summarize_interval(r, .hdi = .hdi)
 
   # send back
   return(r)

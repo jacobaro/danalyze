@@ -7,12 +7,13 @@
 #' @param .constant Variable(s) to hold constant within a contrast.
 #' @param .diff.in.diff Variable(s) to use to create a "difference-in-difference" contrast.
 #' @param .add Text to add to a contrast.
+#' @param .keep.all If true, flipped predictions (e.g., 2 vs. 1 and 1 vs. 2) are kept. If false, they are excluded.
 #' @keywords prediction contrast hypothesis
 #' @export
 #' @examples
 #' pr_list(treatment = c(1, 0), condition = c("High", "Low"), .constant = "condition")
 #'
-pr_list = function(..., .constant = NULL, .diff.in.diff = NULL, .add = NULL) {
+pr_list = function(..., .constant = NULL, .diff.in.diff = NULL, .add = NULL, .keep.all = F) {
   # expand to create combinations -- moving to expand_grid (or removing strings as factors) fixes a problem with predictions being reversed
   pr = dplyr::as_tibble(tidyr::expand_grid(...))
 
@@ -63,10 +64,11 @@ pr_list = function(..., .constant = NULL, .diff.in.diff = NULL, .add = NULL) {
       apply(pr[pr.list$x1, .diff.in.diff] != pr[pr.list$x2, .diff.in.diff], 1, all)
 
     # make sure they are not all the same
-    pr.list$.not.same = !(pr.list$x1 == pr.list$x2 | pr.list$x3 == pr.list$x4 | (pr.list$x1 == pr.list$x3 & pr.list$x2 == pr.list$x4) | (pr.list$x1 == pr.list$x4 & pr.list$x2 == pr.list$x3))
+    pr.list$.not.same = pr.list$.not.same = !(pr.list$x1 == pr.list$x2 & pr.list$x3 == pr.list$x4 & pr.list$x1 == pr.list$x3)
+    # pr.list$.not.same = !(pr.list$x1 == pr.list$x2 | pr.list$x3 == pr.list$x4 | (pr.list$x1 == pr.list$x3 & pr.list$x2 == pr.list$x4) | (pr.list$x1 == pr.list$x4 & pr.list$x2 == pr.list$x3))
 
     # identify entries that test the same thing
-    pr.list$.unique = paste(pr.list$x1, pr.list$x2, pr.list$x3, pr.list$x4) == mapply(
+    pr.list$.unique = if(.keep.all) T else paste(pr.list$x1, pr.list$x2, pr.list$x3, pr.list$x4) == mapply(
       function(x1, x2, x3, x4) {
         r = t(matrix(c(x1, x2, x3, x4, x2, x1, x4, x3, x3, x4, x1, x2, x4, x3, x2, x1, x1, x2, x4, x3, x2, x1, x3, x4), nrow = 4))
         r = r[order(r[, 1], r[, 2], r[, 3], r[, 4]), ]
@@ -86,7 +88,7 @@ pr_list = function(..., .constant = NULL, .diff.in.diff = NULL, .add = NULL) {
     pr.list$.not.same = !(pr.list$x1 == pr.list$x2)
 
     # identify entries that test the same thing
-    pr.list$.unique = paste(pr.list$x1, pr.list$x2) == mapply(function(x1, x2) if(x1 < x2) return(paste(x1, x2)) else return(paste(x2, x1)), pr.list$x1, pr.list$x2)
+    pr.list$.unique = if(.keep.all) T else paste(pr.list$x1, pr.list$x2) == mapply(function(x1, x2) if(x1 < x2) return(paste(x1, x2)) else return(paste(x2, x1)), pr.list$x1, pr.list$x2)
   }
 
   # select only good contrasts

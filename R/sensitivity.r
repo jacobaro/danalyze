@@ -3,6 +3,10 @@ needs::needs(tidyverse)
 
 # sensitivity tests
 
+# articles
+# https://www.mattblackwell.org/research/sensitivity/
+# https://arxiv.org/abs/2003.04948
+
 # try the de-confounder approach
 # basically include a variable that captures the "distribution of assigned causes" which is a stand-in for unobserved factors influencing our treatments
 # a posterior predictive check makes sure that the latent variable actually does a good job of capturing the assigned causes (must pass to use)
@@ -123,6 +127,12 @@ holdout_data = function(data, portion = 0.20) {
   # return
   return(list(train = d.train, validation = d.val, mask = holdout.mask, rows = rows.chosen))
 }
+
+# a key requirement is "the factor model must find a factor that renders other causes of the outcome conditionally independent" -- if true then satisfy weak unconfoundedness for the synthetic confounder
+# (a) included causes partially capture confounding between treatment and outcome
+# (b) use a probabilistic low-dimensional factor model on observed causes to identify latent unobserved confounder
+# (c) assess whether this variable does capture a latent counder by using posterior predictive checks to determine if its inclusion makes observed causes conditionally independent (limits inclusion of multi-cause colliders/mediators)
+# (d) this obviously cannot pick up a single-cause confounder that is unrelated to included variables--a variable way out of left field
 
 # run factor model
 factor_model = function(formula, data, latent = 2, model.type = c("ppca", "linear", "quadratic"), seed = as.integer(Sys.time()), data.std.dev = 0.1, z.std.dev = 2.0) {
@@ -333,3 +343,208 @@ test_deconfounder = function() {
   summary(m.conf)
 }
 
+## next build out functionality for blackwell's sensitivity analysis
+
+# sensitivity analysis from blackwell (2014)
+sensitivity = function() {
+  # adjustment function for various levels of confounding
+  one.sided = function(alpha, pscores, treat) {
+    adj = alpha * (1 - pscores) * treat - alpha * pscores * (1 - treat)
+    return(adj)
+  }
+
+  model.y = sens.out
+  model.t = sens.treat
+  cov.form = ~ .
+  data = sens.out$model
+  alpha = seq(-0.5, 0.5, by = 0.02)
+  confound = "one.sided"
+
+  if (inherits(model.y, "glm")) {
+    stop("Only works for linear outcome models right now. Check back soon.")
+  }
+  y.dat <- model.frame(model.y)
+  t.dat <- model.frame(model.t)
+  c.dat <- model.frame(cov.form, data)
+  pscores <- fitted(model.t)
+  rn.y <- row.names(y.dat)
+  rn.t <- row.names(t.dat)
+  t.name <- colnames(t.dat)[1]
+
+
+  if (!identical(rn.y, rn.t)) {
+    bothrows <- intersect(rn.y, rn.t)
+    y.dat <- y.dat[bothrows, ]
+    t.dat <- t.dat[bothrows, ]
+    c.dat <- c.dat[bothrows, ]
+    pscores <- pscores[bothrows]
+  }
+
+  c.dat <- c.dat[, !(colnames(c.dat) %in% colnames(y.dat))]
+  y.dat <- cbind(y.dat, c.dat)
+
+  if (missing(alpha)) {
+    if (length(unique(y.dat[, 1])) == 2) {
+      alpha <- seq(-0.5, 0.5, length = 11)
+    }
+    else {
+      iqr <- quantile(y.dat[, 1], 0.75) - quantile(y.dat[,
+                                                         1], 0.25)
+      alpha <- seq(-iqr/2, iqr/2, length = 11)
+    }
+  }
+
+  if ("(weights)" %in% colnames(y.dat)) {
+    colnames(y.dat)[colnames(y.dat) == "(weights)"] <- as.character(model.y$call$weights)
+  }
+
+  rsq.form <- cov.form
+  rsq.form[[2]] <- as.name("y.adj")
+  rsq.form[[3]] <- cov.form[[2]]
+  all.covs <- union(all.vars(model.y$terms[[3]]), all.vars(cov.form))
+  all.covs <- all.covs[all.covs != t.name]
+  partial.form <- as.formula(paste(colnames(y.dat)[1], paste(all.covs,
+                                                             collapse = " + "), sep = " ~ "))
+  sens.form <- model.y$terms
+  sens.form[[2]] <- as.name("y.adj")
+  sens <- matrix(NA, nrow = length(alpha), ncol = 7)
+  colnames(sens) <- c("rsqs", "alpha", "estimate", "lower", "upper", "estimate_low","estimate_high")
+  sens[, "alpha"] <- alpha
+  y.dat$y.adj <- NA
+
+  for (j in 1:length(alpha)) {
+    adj <- do.call(confound, list(alpha = alpha[j], pscores = pscores,
+                                  treat = t.dat[, 1]))
+    y.dat$y.adj <- y.dat[, 1] - adj
+    s.out <- update(model.y, formula. = sens.form, data = y.dat)
+
+    r.out <- update(model.y, formula = rsq.form, data = y.dat[t.dat[,1] == 0, ])
+    sens[j, 4:5] <- confint(coeftest(s.out, vcov = vcovHC(s.out, type="HC1")))[t.name, ]
+
+    #getting the treatment effect for low ang high level of the conditional variable
+    #setting the name of the conditional variable here manually
+    cond_var_values_list = quantile(y.dat[["sv.var.military.capability"]], probs =c(0.025, 0.975))
+
+    for (val in 1:length(cond_var_values_list)){
+      level_of_cond_var = cond_var_values_list[val]
+
+      #setting the name of the interaction term here now manually
+      coeff_interaction = s.out$coefficients["sv.var.military.capability:mid.force.escalation_d"]
+      trt_effect = s.out$coefficients[t.name] + coeff_interaction*level_of_cond_var
+      index = 5 + val
+      sens[j, index] = trt_effect
+    }
+    sens[j, 3] <- coef(s.out)[t.name]
+    sens[j, 1] <- alpha[j]^2 * var(t.dat[, 1])/var(residuals(s.out))
+  }
+  partial.out <- lm(partial.form, data = y.dat[t.dat[, 1] ==
+                                                 0, ])
+  dropmat <- drop1(partial.out)
+  prsqs <- dropmat[-1, 2]/dropmat[-1, 3]
+  names(prsqs) <- rownames(dropmat)[-1]
+  out <- list(sens = data.frame(sens), partial.r2 = prsqs)
+}
+
+## build out a selection on unobservables vs. selection on observables approach
+
+# the "poet" appraoch to sensitivity analysis from Chaudoin, Hays, & Hicks 2013
+rpoet = function(model.y, model.t, data) {
+  # set data
+  data = dplyr::select(data, all.vars(model.y$terms), all.vars(model.t$terms))
+  data = data[complete.cases(data), ]
+
+  # rerun
+  model.y = update(model.y, data = data)
+  model.t = update(model.t, data = data)
+
+  # identify treatment
+  out.name = colnames(model.y$model)[1]
+  treat.name = colnames(model.t$model)[1]
+
+  # set new terms
+  terms.notreat = attr(model.y$terms, "term.labels")[attr(model.y$terms, "term.labels") != treat.name]
+  terms.noconf = attr(model.y$terms, "term.labels")[!attr(model.y$terms, "term.labels") %in% attr(model.t$terms, "term.labels")]
+  terms.notreat.noconf = terms.noconf[terms.noconf != treat.name]
+
+  # make sure we can still run with no other variables
+  if(length(terms.notreat.noconf) == 0) {
+    terms.notreat.noconf = c("1") # intercept
+  }
+
+  ## regress treatment on confounders and controls
+  m.tr = update(model.t, formula = reformulate(termlabels = terms.notreat, response = treat.name))
+
+  # get residuals -- unexplained variance in treatment
+  data$.tr.resid = residuals(m.tr)
+
+  # get varaiances for dv, treatment, and treatment residuals
+  var.dv = var(model.y$model[, 1])
+  var.treat = var(model.t$model[, 1])
+  var.resid = var(data$.tr.resid)
+
+  # set sim.adj -- treatment variance over residual variance
+  sim.adj = var.treat / var.resid
+
+  ## regress outcome on treatment residuals and observables
+  m.dv = update(model.y, formula = reformulate(termlabels = c(".tr.resid", terms.notreat), response = out.name))
+
+  ## regress outcome on observables (i.e. the constrained equation, where alpha is constrained to equal zero)
+  m.constr = update(model.y, formula = reformulate(termlabels = terms.notreat, response = out.name))
+
+  # get unobserved variance
+  var.unobs = var(residuals(m.constr))
+
+  # get full linear combination
+  data$.full.pred = predict(m.constr, type = "response")
+
+  # regress other variables on full prediction
+  m.other = update(model.y, formula = reformulate(termlabels = terms.noconf, response = ".full.pred"))
+
+  # same wuthout treatment
+  m.other.no.tr = update(model.y, formula = reformulate(termlabels = terms.notreat.noconf, response = ".full.pred"))
+
+  # get variance
+  var.full.r = var(residuals(m.other.no.tr)) #deviance(m.other.no.tr) / (nrow(data) - 1)
+
+  # get ratio of treatment in full predicted over other variance
+  ss.obs.full = m.other$coefficients[treat.name] / var.full.r
+
+  # get ratio of ss.obs.full over unobserved variance
+  unob.ce.full = ss.obs.full * var.unobs
+
+  # get sim.adj over unob.ce.full
+  sim.bias.full = sim.adj * unob.ce.full
+
+  # get ratio
+  alpha = m.dv$coefficients[".tr.resid"]
+  # altonji.ratio = alpha / sim.bias.full
+  altonji.ratio = m.dv$coefficients[".tr.resid"] / (sim.adj * ss.obs.full * var.unobs)
+
+  # the ratio is equal to the:
+  # impact of the unexplained variance in the treatment on the outcome
+  # -- over --
+  #
+
+  # get other vars
+  imbens.ratio = ((alpha / sim.adj)^2) / (unob.ce.full^2)
+  r2.full = (var.treat) * (m.other$coefficients[treat.name]^2) / (var.full.r)
+  obs.select = altonji.ratio * unob.ce.full
+  adj.ratio = 1 / sim.adj
+
+  # output
+  r = data_frame(
+    obs.cond.mean = m.other$coefficients[2],
+    cond.var = var.full.r,
+    unobs.cond.mean = unob.ce.full,
+    implied.ratio.altonji = altonji.ratio,
+    alpha.hat = alpha,
+    var.disturb = var.unobs,
+    adj.ratio = adj.ratio,
+    selection.obs = obs.select,
+    imbens.ratio = imbens.ratio,
+    r2.full = r2.full
+  )
+
+  # return
+  return(r)
+}
